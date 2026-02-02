@@ -1,23 +1,71 @@
 import streamlit as st
-import requests
 
-st.title("🎬 TMDB API 테스트")
+st.set_page_config(page_title="나와 어울리는 영화는?", page_icon="🎬")
 
-# 사이드바에서 API 키 입력
-TMDB_API_KEY = st.sidebar.text_input("TMDB API Key", type="password")
+st.title("🎬 나와 어울리는 영화는?")
+st.write("대학생 버전 심리테스트! 아래 5개 질문에 답하면, 당신과 어울리는 영화 무드를 찾아드려요 😎")
 
-if TMDB_API_KEY:
-    if st.button("인기 영화 가져오기"):
-        # TMDB에서 인기 영화 가져오기
-        url = f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=ko-KR"
-        response = requests.get(url)
-        data = response.json()
-        
-        # 첫 번째 영화 정보 출력
-        movie = data['results'][0]
-        st.write(f"🎬 제목: {movie['title']}")
-        st.write(f"⭐ 평점: {movie['vote_average']}/10")
-        st.write(f"📅 개봉일: {movie['release_date']}")
-        st.write(f"📝 줄거리: {movie['overview'][:100]}...")
-else:
-    st.info("사이드바에 TMDB API Key를 입력해주세요.")
+# 질문 데이터
+questions = [
+    {
+        "q": "1) 시험 끝나고 갑자기 하루가 비었다. 너의 “힐링 루틴”은?",
+        "options": [
+            "A. 카페+산책하면서 감정정리(로맨스/드라마)",
+            "B. 즉흥 당일치기/클라이밍/액티비티(액션/어드벤처)",
+            "C. 집콕하면서 세계관 빵빵한 콘텐츠 정주행(설정덕후)(SF/판타지)",
+            "D. 친구랑 밈 주고받고 예능 보며 깔깔(코미디)",
+        ],
+    },
+    {
+        "q": "2) 너가 영화에서 제일 중요한 포인트는?",
+        "options": [
+            "A. “인물 감정선”이 촘촘해야 몰입됨(로맨스/드라마)",
+            "B. 손에 땀 나는 “미션/추격/전투”가 있어야 함(액션/어드벤처)",
+            "C. “상상력+세계관+떡밥회수”가 제맛(SF/판타지)",
+            "D. 대사/상황이 빵 터지는 “웃김”이 우선(코미디)",
+        ],
+    },
+    {
+        "q": "3) 조별과제 발표 10분 전, 너의 멘탈 상태는?",
+        "options": [
+            "A. ‘나 완전 망하면 어쩌지…’ 감정 폭풍(로맨스/드라마)",
+            "B. ‘오히려 좋아’ 전투모드로 해결(액션/어드벤처)",
+            "C. ‘이건 시뮬레이션이다’ 뇌내 시나리오 돌림(SF/판타지)",
+            "D. ‘ㅋㅋㅋㅋ 살려줘’ 드립으로 버팀(코미디)",
+        ],
+    },
+    {
+        "q": "4) 좋아하는 주인공 타입은?",
+        "options": [
+            "A. 상처 있지만 성장하는 섬세한 주인공(로맨스/드라마)",
+            "B. 몸으로 부딪히며 판 뒤집는 히어로(액션/어드벤처)",
+            "C. 규칙을 발견하고 세계를 해석하는 천재/이방인(SF/판타지)",
+            "D. 찐친 케미로 사건을 망치고(?) 해결하는 인싸/허당(코미디)",
+        ],
+    },
+    {
+        "q": "5) 영화 엔딩, 너의 취향은?",
+        "options": [
+            "A. 여운 남는 현실 엔딩… 눈물 한 방울(로맨스/드라마)",
+            "B. 다음 편 기대되는 통쾌한 승리 엔딩(액션/어드벤처)",
+            "C. “이게 이렇게 연결된다고?” 소름 반전 엔딩(SF/판타지)",
+            "D. 엔딩까지 웃겨서 기분 좋게 나가는 엔딩(코미디)",
+        ],
+    },
+]
+
+st.divider()
+
+answers = []
+for i, item in enumerate(questions):
+    ans = st.radio(
+        item["q"],
+        item["options"],
+        key=f"q{i}",
+    )
+    answers.append(ans)
+
+st.divider()
+
+if st.button("결과 보기"):
+    st.subheader("분석 중...")
