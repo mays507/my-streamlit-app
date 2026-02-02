@@ -1,221 +1,292 @@
-import requests
 import streamlit as st
+import requests
+from collections import Counter
+from typing import Dict, List, Optional
 
-# ---------------------------
-# 기본 설정
-# ---------------------------
+# =========================
+# Page Config
+# =========================
 st.set_page_config(page_title="🎬 나와 어울리는 영화는?", page_icon="🎬", layout="wide")
+
 POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
-# A/B/C/D -> 장르 그룹
-# - A: 로맨스/드라마
-# - B: 액션/어드벤처
-# - C: SF/판타지
-# - D: 코미디
+# A/B/C/D -> 장르 그룹(사용자 요구 유지)
 GENRE_GROUPS = {
-    "romance_drama": {"label": "로맨스/드라마", "with_genres": "18|10749"},
-    "action": {"label": "액션/어드벤처", "with_genres": "28"},
-    "sf_fantasy": {"label": "SF/판타지", "with_genres": "878|14"},
-    "comedy": {"label": "코미디", "with_genres": "35"},
+    "로맨스/드라마": [10749, 18],
+    "액션/어드벤처": [28],
+    "SF/판타지": [878, 14],
+    "코미디": [35],
 }
+GROUP_PRIORITY = ["로맨스/드라마", "액션/어드벤처", "SF/판타지", "코미디"]
 
+# =========================
+# 질문(5개, 4지선다, 대학생 타겟)
+# =========================
 QUESTIONS = [
     {
-        "q": "1) 시험 끝나고 갑자기 하루가 비었다. 너의 “힐링 루틴”은?",
+        "q": "1) 시험 끝난 금요일 밤, 너의 플랜은?",
         "options": [
-            "A. 카페+산책하면서 감정정리(로맨스/드라마)",
-            "B. 즉흥 당일치기/클라이밍/액티비티(액션/어드벤처)",
-            "C. 집콕하면서 세계관 빵빵한 콘텐츠 정주행(설정덕후)(SF/판타지)",
-            "D. 친구랑 밈 주고받고 예능 보며 깔깔(코미디)",
+            {"label": "A. 잔잔한 감정선 + 여운 남는 이야기로 힐링할래", "group": "로맨스/드라마"},
+            {"label": "B. 몸이 먼저 반응하는 쾌감! 시원한 액션 한 방", "group": "액션/어드벤처"},
+            {"label": "C. 현실 탈출… 세계관 미친 상상력에 잠기고 싶어", "group": "SF/판타지"},
+            {"label": "D. 뇌 비우고 빵 터지는 웃음으로 스트레스 해제", "group": "코미디"},
         ],
     },
     {
-        "q": "2) 너가 영화에서 제일 중요한 포인트는?",
+        "q": "2) 팀플에서 네 역할은 보통?",
         "options": [
-            "A. “인물 감정선”이 촘촘해야 몰입됨(로맨스/드라마)",
-            "B. 손에 땀 나는 “미션/추격/전투”가 있어야 함(액션/어드벤처)",
-            "C. “상상력+세계관+떡밥회수”가 제맛(SF/판타지)",
-            "D. 대사/상황이 빵 터지는 “웃김”이 우선(코미디)",
+            {"label": "A. 분위기/감정 케어 담당, 갈등 중재도 내가 함", "group": "로맨스/드라마"},
+            {"label": "B. 일단 돌파! 실행 플랜 짜서 밀어붙이는 타입", "group": "액션/어드벤처"},
+            {"label": "C. ‘이렇게 하면 어떨까?’ 새로운 아이디어 제시 담당", "group": "SF/판타지"},
+            {"label": "D. 분위기 메이커. 웃기면서도 핵심은 챙김", "group": "코미디"},
         ],
     },
     {
-        "q": "3) 조별과제 발표 10분 전, 너의 멘탈 상태는?",
+        "q": "3) 여행을 간다면 가장 끌리는 코스는?",
         "options": [
-            "A. ‘나 완전 망하면 어쩌지…’ 감정 폭풍(로맨스/드라마)",
-            "B. ‘오히려 좋아’ 전투모드로 해결(액션/어드벤처)",
-            "C. ‘이건 시뮬레이션이다’ 뇌내 시나리오 돌림(SF/판타지)",
-            "D. ‘ㅋㅋㅋㅋ 살려줘’ 드립으로 버팀(코미디)",
+            {"label": "A. 감성 카페 + 밤 산책 + 사진… 여운 코스", "group": "로맨스/드라마"},
+            {"label": "B. 액티비티/트레킹/스포츠… 몸 쓰는 게 최고", "group": "액션/어드벤처"},
+            {"label": "C. 테마파크/전시/체험… ‘세계관’ 있는 장소", "group": "SF/판타지"},
+            {"label": "D. 맛집 투어 + 친구들이랑 드립 배틀", "group": "코미디"},
         ],
     },
     {
-        "q": "4) 좋아하는 주인공 타입은?",
+        "q": "4) OTT에서 썸네일 보고 클릭하는 기준은?",
         "options": [
-            "A. 상처 있지만 성장하는 섬세한 주인공(로맨스/드라마)",
-            "B. 몸으로 부딪히며 판 뒤집는 히어로(액션/어드벤처)",
-            "C. 규칙을 발견하고 세계를 해석하는 천재/이방인(SF/판타지)",
-            "D. 찐친 케미로 사건을 망치고(?) 해결하는 인싸/허당(코미디)",
+            {"label": "A. 표정/대사 느낌이 좋은 작품 (감정 몰입이 중요)", "group": "로맨스/드라마"},
+            {"label": "B. 스케일/폭발/추격전… 한눈에 ‘세다’ 싶으면 클릭", "group": "액션/어드벤처"},
+            {"label": "C. 우주/마법/초능력/괴물… 설정이 신박하면 클릭", "group": "SF/판타지"},
+            {"label": "D. 표정만 봐도 웃김. 텐션 가벼우면 클릭", "group": "코미디"},
         ],
     },
     {
-        "q": "5) 영화 엔딩, 너의 취향은?",
+        "q": "5) 영화 보고 난 뒤 남는 건 보통?",
         "options": [
-            "A. 여운 남는 현실 엔딩… 눈물 한 방울(로맨스/드라마)",
-            "B. 다음 편 기대되는 통쾌한 승리 엔딩(액션/어드벤처)",
-            "C. “이게 이렇게 연결된다고?” 소름 반전 엔딩(SF/판타지)",
-            "D. 엔딩까지 웃겨서 기분 좋게 나가는 엔딩(코미디)",
+            {"label": "A. ‘아…’ 하고 마음이 오래 남는 여운/메시지", "group": "로맨스/드라마"},
+            {"label": "B. 심장 뛰는 장면들! 액션 시퀀스가 기억남", "group": "액션/어드벤처"},
+            {"label": "C. 설정/세계관 분석… 해석 찾아보는 재미", "group": "SF/판타지"},
+            {"label": "D. 명장면/명대사로 친구들이랑 계속 놀림", "group": "코미디"},
         ],
     },
 ]
 
+# =========================
+# Helpers
+# =========================
+def pick_top_group(scores: Counter) -> str:
+    if not scores:
+        return GROUP_PRIORITY[0]
+    max_score = max(scores.values())
+    tied = [g for g, s in scores.items() if s == max_score]
+    for g in GROUP_PRIORITY:
+        if g in tied:
+            return g
+    return tied[0]
 
-# ---------------------------
-# 헬퍼 함수
-# ---------------------------
-def option_to_group(option_text: str) -> str:
-    if not option_text:
-        return "romance_drama"
-    first = option_text.strip()[0].upper()
-    return {
-        "A": "romance_drama",
-        "B": "action",
-        "C": "sf_fantasy",
-        "D": "comedy",
-    }.get(first, "romance_drama")
+def safe_text(x: Optional[str]) -> str:
+    return x.strip() if isinstance(x, str) and x.strip() else ""
 
-
-def pick_final_group(group_list: list[str]) -> tuple[str, dict]:
-    counts = {k: 0 for k in GENRE_GROUPS.keys()}
-    for g in group_list:
-        counts[g] += 1
-
-    max_count = max(counts.values())
-    tied = [k for k, v in counts.items() if v == max_count]
-
-    # 동점일 때 우선순위(원하면 바꿔도 됨)
-    priority = ["romance_drama", "action", "sf_fantasy", "comedy"]
-    tied.sort(key=lambda x: priority.index(x))
-    return tied[0], counts
-
-
-def reason_text(group_key: str, counts: dict) -> str:
-    label = GENRE_GROUPS[group_key]["label"]
-    picked = counts.get(group_key, 0)
-
-    if group_key == "romance_drama":
-        return f"감정선/여운을 중시하는 선택이 많아서 {label}가 가장 잘 맞아요. (A 선택 {picked}/5)"
-    if group_key == "action":
-        return f"속도감·미션·박진감을 선호해서 {label} 취향이 강해요. (B 선택 {picked}/5)"
-    if group_key == "sf_fantasy":
-        return f"세계관·상상력·떡밥 회수에 끌려서 {label}가 찰떡이에요. (C 선택 {picked}/5)"
-    if group_key == "comedy":
-        return f"‘웃김’이 1순위라 {label}가 딱 맞아요. (D 선택 {picked}/5)"
-    return f"{label} 성향이 가장 강하게 나타났어요. (선택 {picked}/5)"
-
-
-@st.cache_data(show_spinner=False)
-def fetch_top5_movies(api_key: str, with_genres: str):
-    # 요구사항 URL(쿼리) 기반으로 params 사용
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def tmdb_discover_movies(api_key: str, genre_id: int, language: str, page: int = 1) -> Dict:
     url = "https://api.themoviedb.org/3/discover/movie"
     params = {
         "api_key": api_key,
-        "with_genres": with_genres,        # 예: "28" 또는 "18|10749"
-        "language": "ko-KR",
+        "with_genres": genre_id,
+        "language": language,
         "sort_by": "popularity.desc",
         "include_adult": "false",
-        "page": 1,
+        "include_video": "false",
+        "page": page,
     }
-    r = requests.get(url, params=params, timeout=20)
+    r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
-    data = r.json()
-    return (data.get("results") or [])[:5]
+    return r.json()
 
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def tmdb_movie_details(api_key: str, movie_id: int, language: str) -> Dict:
+    # 공식 문서에서 권장하는 방식: append_to_response로 추가 데이터 한번에
+    url = f"https://api.themoviedb.org/3/movie/{movie_id}"
+    params = {"api_key": api_key, "language": language, "append_to_response": "keywords"}
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    return r.json()
 
-# ---------------------------
+def merge_unique_movies(lists: List[List[Dict]], limit: int = 5) -> List[Dict]:
+    seen = set()
+    merged = []
+    i = 0
+    while len(merged) < limit:
+        progressed = False
+        for lst in lists:
+            if i < len(lst):
+                m = lst[i]
+                mid = m.get("id")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    merged.append(m)
+                    progressed = True
+                    if len(merged) >= limit:
+                        break
+        if not progressed:
+            break
+        i += 1
+    return merged[:limit]
+
+def fetch_recommendations(api_key: str, group: str, language: str, need: int = 5) -> List[Dict]:
+    genre_ids = GENRE_GROUPS[group]
+    per_genre = []
+
+    for gid in genre_ids:
+        results = []
+        for p in [1, 2]:
+            try:
+                data = tmdb_discover_movies(api_key, gid, language, page=p)
+                results.extend(data.get("results", []))
+            except Exception:
+                continue
+
+        cleaned = []
+        for m in results:
+            if not m.get("poster_path"):
+                continue
+            if not safe_text(m.get("overview")):
+                continue
+            cleaned.append(m)
+
+        cleaned.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+        per_genre.append(cleaned)
+
+    if len(per_genre) == 1:
+        return per_genre[0][:need]
+    return merge_unique_movies(per_genre, limit=need)
+
+def build_reason(group: str, movie: Dict, details: Dict) -> str:
+    # 짧고 납득되는 추천 이유 생성(키워드 활용)
+    rating = movie.get("vote_average", 0)
+    kws = []
+    kw_obj = details.get("keywords", {})
+    if isinstance(kw_obj, dict):
+        kws = [k.get("name") for k in kw_obj.get("keywords", []) if k.get("name")]
+    kws = kws[:3]
+
+    parts = [f"당신의 결과가 **{group}** 쪽이라 이 장르 인기작을 우선 추천했어요."]
+    if rating:
+        parts.append(f"평점 **{rating:.1f}**로 반응도 좋아요.")
+    if kws:
+        parts.append(f"키워드: `{', '.join(kws)}`")
+    return " ".join(parts)
+
+# =========================
 # UI
-# ---------------------------
+# =========================
 st.title("🎬 나와 어울리는 영화는?")
-st.write("간단한 5문항 심리테스트로 당신의 영화 취향 무드를 분석하고, TMDB 인기 영화 5편을 추천해줄게요 🍿")
+st.write("5개 질문에 답하면, 당신의 영화 취향을 분석해서 TMDB 인기 영화 5개를 예쁘게 추천해줄게요 🍿")
 
-# ✅ 키 입력: 1) 사이드바 입력 2) (선택) st.secrets["TMDB_API_KEY"] 자동 사용
 with st.sidebar:
     st.header("🔑 TMDB API Key")
-    st.caption("키는 깃허브에 올리면 유출돼서, **사이드바 입력**이나 **st.secrets**로 관리하는 게 안전해요.")
     default_key = st.secrets.get("TMDB_API_KEY", "")
-    api_key = st.text_input("API Key", value=default_key, type="password", placeholder="여기에 TMDB API Key 붙여넣기")
+    api_key = st.text_input("API Key", value=default_key, type="password", placeholder="TMDB API Key 붙여넣기")
+    language = st.selectbox("언어(language)", ["ko-KR", "en-US"], index=0)
 
 st.divider()
 
 answers = []
+scores = Counter()
+
+st.subheader("📝 질문")
 for i, item in enumerate(QUESTIONS):
-    ans = st.radio(item["q"], item["options"], key=f"q{i}")
-    answers.append(ans)
+    labels = [o["label"] for o in item["options"]]
+    choice = st.radio(item["q"], labels, index=None, key=f"q{i}")
+    answers.append(choice)
+
+    if choice:
+        selected = next(o for o in item["options"] if o["label"] == choice)
+        scores[selected["group"]] += 1
 
 st.divider()
 
-if st.button("결과 보기"):
+if st.button("결과 보기", type="primary"):
     if not api_key.strip():
         st.error("사이드바에 TMDB API Key를 입력해줘!")
         st.stop()
 
-    st.subheader("분석 중...")
-
-    # 1) 사용자 답변 -> 장르 결정
-    groups = [option_to_group(a) for a in answers]
-    final_group, counts = pick_final_group(groups)
-
-    label = GENRE_GROUPS[final_group]["label"]
-    with_genres = GENRE_GROUPS[final_group]["with_genres"]
-    why = reason_text(final_group, counts)
-
-    st.info(f"당신의 무드는 **{label}** 쪽!  \n- 추천 이유: {why}")
-
-    # 2) TMDB API로 인기 영화 5개
-    try:
-        with st.spinner("TMDB에서 인기 영화 5편 가져오는 중..."):
-            movies = fetch_top5_movies(api_key=api_key, with_genres=with_genres)
-    except requests.HTTPError as e:
-        st.error("TMDB 요청이 실패했어. API Key가 맞는지/권한이 있는지 확인해줘.")
-        st.code(str(e))
+    if any(a is None for a in answers):
+        st.warning("5개 질문 모두 답해야 결과를 볼 수 있어 🙂")
         st.stop()
-    except requests.RequestException as e:
-        st.error("네트워크 문제로 TMDB에 접속이 안 돼. (학교/기관망 방화벽, 프록시 등 가능)")
-        st.code(str(e))
-        st.stop()
+
+    best_group = pick_top_group(scores)
+
+    # --------------------------
+    # 1) 결과 제목 (요구사항)
+    # --------------------------
+    st.markdown(f"## ✨ 당신에게 딱인 장르는: **{best_group}**!")
+    st.caption(f"선택 분포: {dict(scores)}")
+
+    # --------------------------
+    # 2) 로딩 spinner (요구사항)
+    # --------------------------
+    with st.spinner("TMDB에서 영화를 불러오는 중..."):
+        movies = fetch_recommendations(api_key.strip(), best_group, language, need=5)
 
     if not movies:
-        st.warning("해당 장르에서 영화 결과가 비어 있어. 다른 선택으로 다시 시도해줘.")
+        st.error("추천 영화를 가져오지 못했어. (네트워크/키/데이터 부족)")
         st.stop()
 
-    st.subheader("🍿 추천 영화 5편")
+    # --------------------------
+    # 3) 3열 카드 레이아웃 (요구사항)
+    # --------------------------
+    cols = st.columns(3, gap="large")
 
-    for m in movies:
-        title = m.get("title") or "제목 없음"
+    for idx, m in enumerate(movies):
+        col = cols[idx % 3]
+
+        movie_id = m.get("id")
+        title = m.get("title") or m.get("original_title") or "제목 없음"
         rating = m.get("vote_average")
-        overview = m.get("overview") or "줄거리 정보가 없어요."
+        overview = safe_text(m.get("overview"))
         poster_path = m.get("poster_path")
         poster_url = f"{POSTER_BASE}{poster_path}" if poster_path else None
 
-        with st.container(border=True):
-            c1, c2 = st.columns([1, 2], gap="large")
-
-            with c1:
+        # 상세 정보는 expander 안에서 가져오도록 (속도/UX)
+        with col:
+            with st.container(border=True):
                 if poster_url:
                     st.image(poster_url, use_container_width=True)
                 else:
                     st.info("포스터 없음 🖼️")
 
-            with c2:
                 st.markdown(f"### {title}")
                 if rating is not None:
-                    st.write(f"⭐ 평점: **{float(rating):.1f} / 10**")
+                    st.write(f"⭐ **{float(rating):.1f} / 10**")
                 else:
-                    st.write("⭐ 평점: 정보 없음")
+                    st.write("⭐ 평점 정보 없음")
 
-                st.markdown("**줄거리**")
-                st.write(overview)
+                # --------------------------
+                # 4) 카드 클릭 -> 상세(Expander) (요구사항)
+                # --------------------------
+                with st.expander("상세 정보 보기"):
+                    # 상세 로딩도 spinner 처리
+                    with st.spinner("상세 정보를 불러오는 중..."):
+                        details = {}
+                        try:
+                            details = tmdb_movie_details(api_key.strip(), movie_id, language)
+                        except Exception:
+                            details = {}
 
-                st.markdown("**이 영화를 추천하는 이유**")
-                st.write(f"- 당신의 답변이 **{label}** 성향으로 가장 많이 모였어요.\n"
-                         f"- 그래서 해당 장르에서 **인기작(조회/화제성 중심)** 위주로 골랐어!")
+                    # 줄거리
+                    st.markdown("**줄거리**")
+                    st.write(overview if overview else "줄거리 정보가 없어요.")
 
-    st.caption("※ TMDB 인기(popularity.desc) 기준 추천이며, ko-KR 데이터가 없는 작품은 줄거리/제목이 비어 보일 수 있어요.")
+                    # 추천 이유
+                    st.markdown("**이 영화를 추천하는 이유**")
+                    st.write(build_reason(best_group, m, details))
+
+                    # 추가로 보고 싶으면 키워드도 노출
+                    kw_obj = details.get("keywords", {})
+                    if isinstance(kw_obj, dict):
+                        kws = [k.get("name") for k in kw_obj.get("keywords", []) if k.get("name")]
+                        if kws:
+                            st.markdown("**키워드**")
+                            st.write(", ".join(kws[:10]))
+
+    st.caption("※ TMDB 인기(popularity.desc) 기반 추천이며, ko-KR 데이터가 없으면 줄거리/제목이 일부 비어 보일 수 있어요.")
