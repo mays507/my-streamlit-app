@@ -1,4 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/app.py b/app.py
 index c3f5bdfff134337ce2cafd72ef39be113100696b..4d2a71b9292a1d4f2ff3ce420e4bcaf001b1eac2 100644
 --- a/app.py
@@ -645,6 +644,3 @@ index c3f5bdfff134337ce2cafd72ef39be113100696b..4d2a71b9292a1d4f2ff3ce420e4bcaf0
 +st.table(spec_data)
 +
 +st.caption("이 문서는 기획서 요약본입니다. 실제 서비스 구현 시 데이터 소싱 및 검증 체계가 필수입니다.")
- 
-EOF
-)
