@@ -1,8 +1,9 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/app.py b/app.py
-index c3f5bdfff134337ce2cafd72ef39be113100696b..4d2a71b9292a1d4f2ff3ce420e4bcaf001b1eac2 100644
+index c3f5bdfff134337ce2cafd72ef39be113100696b..37adb6a8372f6bfc1b65c4501340af5f4d2b379e 100644
 --- a/app.py
 +++ b/app.py
-@@ -1,430 +1,211 @@
+@@ -1,430 +1,212 @@
 -import json
 -from collections import Counter
 -from typing import Dict, List, Optional, Tuple
@@ -433,6 +434,7 @@ index c3f5bdfff134337ce2cafd72ef39be113100696b..4d2a71b9292a1d4f2ff3ce420e4bcaf0
 -                            st.write(", ".join(kws[:10]))
 -
 -    st.caption("※ TMDB는 작품/언어별로 줄거리 데이터가 비어 있을 수 있어요. (ko-KR 비어 있으면 en-US로 바꿔보기)")
++"""Y-Compass Streamlit proposal page."""
 +from __future__ import annotations
 +
 +import streamlit as st
@@ -644,3 +646,6 @@ index c3f5bdfff134337ce2cafd72ef39be113100696b..4d2a71b9292a1d4f2ff3ce420e4bcaf0
 +st.table(spec_data)
 +
 +st.caption("이 문서는 기획서 요약본입니다. 실제 서비스 구현 시 데이터 소싱 및 검증 체계가 필수입니다.")
+ 
+EOF
+)
