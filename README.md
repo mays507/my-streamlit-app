@@ -1,3 +1,6 @@
+<img width="1222" height="650" alt="image" src="https://github.com/user-attachments/assets/67f703a9-f027-45c4-ac92-ef37b3c60d80" /><img width="1251" height="637" alt="image" src="https://github.com/user-attachments/assets/3ca31285-7924-4216-bff2-2cc6dde2c79d" /><img width="1046" height="661" alt="image" src="https://github.com/user-attachments/assets/94f91f3f-6374-4764-a0e9-d21c5f84da9a" />
+
+
 # 🧭 Y-Compass (와이컴퍼스)
 연세대 AX 캠프 Track 1 — 소그룹 챌린지  
 **근거 기반 AI 진학 카운셀러(Streamlit MVP+)**: 3분 입력만으로 **A/B/C(안정/적정/도전)** 진학 경로와 **8주 준비 로드맵**을 제시합니다.  
