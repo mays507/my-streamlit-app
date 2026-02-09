@@ -1,20 +1,27 @@
-# Y-Compass (와이컴스) — Streamlit MVP+ (심사자 설득력 강화 통합본)
-# (1) CSV 업로드 기반 데이터 커버리지 확장 + 자동 검증 리포트
-# (2) 데이터 신뢰도 점수(0~100) + 감점 사유
-# (3) 환각 방지 정책 문장(필수) + 데이터/가이드 배지
-# (4) A/B/C 점수화 + (수시) route_detail 분리 점수(설명용)
-# (5) 가중치 테이블 공개(설명가능성) + 기여도 breakdown
-# (6) 연도별 기준선 vs 내 성적 차트 + 주석(3개)
-# (7) OpenAI(선택) JSON Object 출력(Responses API) + 룰베이스 fallback
+# Y-Compass (와이컴스) — Streamlit MVP++ (심화 A/B 반영 통합 app.py)
+# =========================================================
+# ✅ 심화 A. 외부 API 연동(1개 이상)
+#   - OpenWeatherMap: 날씨 기반 추천/조언 (key 예시 포함)
+#   - NewsAPI: 실시간 뉴스 기반 분석(키 입력 시)
+#   - 번역 API: DeepL / Papago(키 입력 시) → 다국어 결과 제공
+#
+# ✅ 심화 B. UX/기능 고도화
+#   - 사용자 입력/결과 히스토리 저장(세션) + 선택/복원
+#   - 결과 내보내기: JSON + PDF(ReportLab)
+#   - 데이터 시각화 대시보드(기존 차트 + 외부 데이터 위젯)
+#   - 다국어 지원(ko/en) + 번역 API 연동(선택)
 #
 # 실행:
 #   streamlit run app.py
 #
 # 필요 패키지:
-#   pip install streamlit pandas altair requests
+#   pip install streamlit pandas altair requests reportlab
+#
+# ---------------------------------------------------------
 
 from __future__ import annotations
 
+import io
 import json
 from dataclasses import dataclass
 from datetime import date
@@ -24,6 +31,8 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 # =========================================================
 # Page Config + Styling
@@ -33,29 +42,54 @@ st.set_page_config(page_title="🧭 Y-Compass", page_icon="🧭", layout="wide")
 st.markdown(
     """
 <style>
-/* Badge pills */
-.badge {
-  display: inline-block;
-  padding: 0.25rem 0.6rem;
-  border-radius: 999px;
-  font-weight: 700;
-  font-size: 0.9rem;
-  line-height: 1.2rem;
-  border: 1px solid rgba(0,0,0,0.08);
-}
-.badge-data { background: rgba(16,185,129,0.14); color: rgb(6,95,70); }
-.badge-guide { background: rgba(245,158,11,0.18); color: rgb(120,53,15); }
-.badge-stable { background: rgba(59,130,246,0.14); color: rgb(30,64,175); }
-.badge-fit { background: rgba(168,85,247,0.14); color: rgb(88,28,135); }
-.badge-challenge { background: rgba(239,68,68,0.14); color: rgb(153,27,27); }
+.badge { display:inline-block; padding:0.25rem 0.6rem; border-radius:999px; font-weight:700; font-size:0.9rem;
+         line-height:1.2rem; border:1px solid rgba(0,0,0,0.08); }
+.badge-data { background:rgba(16,185,129,0.14); color:rgb(6,95,70); }
+.badge-guide{ background:rgba(245,158,11,0.18); color:rgb(120,53,15); }
+.badge-stable{ background:rgba(59,130,246,0.14); color:rgb(30,64,175); }
+.badge-fit{ background:rgba(168,85,247,0.14); color:rgb(88,28,135); }
+.badge-challenge{ background:rgba(239,68,68,0.14); color:rgb(153,27,27); }
 
-/* Cards */
-.card-title { font-weight: 800; margin-bottom: 0.2rem; }
-.small { color: rgba(0,0,0,0.6); font-size: 0.92rem; }
+.card-title{ font-weight:800; margin-bottom:0.2rem; }
+.small{ color:rgba(0,0,0,0.6); font-size:0.92rem; }
+.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 </style>
 """,
     unsafe_allow_html=True,
 )
+
+# =========================================================
+# i18n (UI 최소 지원: ko/en)
+# =========================================================
+I18N = {
+    "ko": {
+        "app_title": "🧭 Y-Compass (와이컴퍼스)",
+        "subtitle": "연세대 AX 캠프 Track 1 — 소그룹 챌린지 | 근거 기반 AI 진학 카운셀러 (MVP++)",
+        "policy": "⚠️ 환각 방지 정책: 본 앱은 업로드된 CSV/근거(expander)에 없는 수치·요강을 '사실'로 단정하지 않습니다. 커버리지 밖에서는 '일반 가이드'로만 안내하며, 합격 확률/보장 표현을 사용하지 않습니다.",
+        "data_based": "데이터 기반 ✅",
+        "guide_based": "가이드 기반 🟡",
+        "stable": "안정",
+        "fit": "적정",
+        "challenge": "도전",
+        "export_pdf": "📄 결과 리포트 다운로드 (PDF)",
+        "export_json": "📄 결과 리포트 다운로드 (.json)",
+    },
+    "en": {
+        "app_title": "🧭 Y-Compass",
+        "subtitle": "Yonsei AX Camp Track 1 — Small-group Challenge | Evidence-aware AI Admissions Counselor (MVP++)",
+        "policy": "⚠️ Anti-hallucination policy: This app does NOT assert numbers/rules as facts unless they exist in uploaded CSV/evidence. Outside coverage, it provides general guidance only. No acceptance probability/guarantee language.",
+        "data_based": "Data-backed ✅",
+        "guide_based": "Guide-based 🟡",
+        "stable": "Safe",
+        "fit": "Fit",
+        "challenge": "Reach",
+        "export_pdf": "📄 Download Report (PDF)",
+        "export_json": "📄 Download Report (.json)",
+    },
+}
+
+def t(key: str, lang: str) -> str:
+    return I18N.get(lang, I18N["ko"]).get(key, key)
 
 # =========================================================
 # Options
@@ -78,13 +112,11 @@ CSV_OPTIONAL_COLS = ["route_detail", "source", "note"]
 def _nonempty(s: Optional[str]) -> str:
     return s.strip() if isinstance(s, str) and s.strip() else ""
 
-
 def safe_int(x: Any) -> Optional[int]:
     try:
         return int(x)
     except Exception:
         return None
-
 
 def safe_float(x: Any) -> Optional[float]:
     try:
@@ -95,15 +127,7 @@ def safe_float(x: Any) -> Optional[float]:
     except Exception:
         return None
 
-
 def band_to_float(band: str) -> Optional[float]:
-    """
-    Convert UI band string to float-ish threshold.
-    - "1.x" -> 1.5
-    - "2.x" -> 2.5
-    - "직접입력(예: 2.3)" -> parse as float
-    - "모름/입력안함" -> None
-    """
     band = _nonempty(band)
     if not band or "모름" in band:
         return None
@@ -117,34 +141,165 @@ def band_to_float(band: str) -> Optional[float]:
     except Exception:
         return None
 
-
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(v, hi))
 
-
-def coverage_badge_html(is_data_based: bool) -> str:
+def coverage_badge_html(is_data_based: bool, lang: str) -> str:
     if is_data_based:
-        return '<span class="badge badge-data">데이터 기반 ✅</span>'
-    return '<span class="badge badge-guide">가이드 기반 🟡</span>'
+        return f'<span class="badge badge-data">{t("data_based", lang)}</span>'
+    return f'<span class="badge badge-guide">{t("guide_based", lang)}</span>'
 
-
-def band_badge_html(band: str) -> str:
+def band_badge_html(band: str, lang: str) -> str:
     band = _nonempty(band)
     if band == "안정":
-        return '<span class="badge badge-stable">안정</span>'
+        return f'<span class="badge badge-stable">{t("stable", lang)}</span>'
     if band == "적정":
-        return '<span class="badge badge-fit">적정</span>'
-    return '<span class="badge badge-challenge">도전</span>'
+        return f'<span class="badge badge-fit">{t("fit", lang)}</span>'
+    return f'<span class="badge badge-challenge">{t("challenge", lang)}</span>'
 
+# =========================================================
+# External APIs (심화 A)
+# =========================================================
+@st.cache_data(show_spinner=False, ttl=60 * 15)
+def fetch_weather_openweather(api_key: str, city: str, units: str = "metric", lang: str = "kr") -> Dict[str, Any]:
+    """
+    OpenWeatherMap Current Weather API
+    https://openweathermap.org/current
+    """
+    api_key = _nonempty(api_key)
+    city = _nonempty(city)
+    if not api_key or not city:
+        return {"ok": False, "error": "missing_key_or_city"}
+
+    url = "https://api.openweathermap.org/data/2.5/weather"
+    params = {"q": city, "appid": api_key, "units": units, "lang": lang}
+    r = requests.get(url, params=params, timeout=20)
+    if r.status_code != 200:
+        return {"ok": False, "error": f"HTTP {r.status_code}", "raw": r.text[:500]}
+    data = r.json()
+    return {"ok": True, "data": data}
+
+@st.cache_data(show_spinner=False, ttl=60 * 15)
+def fetch_news_newsapi(api_key: str, q: str, language: str = "ko", page_size: int = 8) -> Dict[str, Any]:
+    """
+    NewsAPI Everything endpoint
+    https://newsapi.org/docs/endpoints/everything
+    """
+    api_key = _nonempty(api_key)
+    q = _nonempty(q)
+    if not api_key or not q:
+        return {"ok": False, "error": "missing_key_or_query"}
+
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": q,
+        "language": language,
+        "pageSize": page_size,
+        "sortBy": "publishedAt",
+        "apiKey": api_key,
+    }
+    r = requests.get(url, params=params, timeout=20)
+    if r.status_code != 200:
+        return {"ok": False, "error": f"HTTP {r.status_code}", "raw": r.text[:500]}
+    data = r.json()
+    return {"ok": True, "data": data}
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def translate_deepl(api_key: str, text: str, target_lang: str = "EN") -> Dict[str, Any]:
+    """
+    DeepL translate API
+    https://www.deepl.com/docs-api
+    - free endpoint: https://api-free.deepl.com/v2/translate
+    - pro endpoint:  https://api.deepl.com/v2/translate
+    """
+    api_key = _nonempty(api_key)
+    text = _nonempty(text)
+    if not api_key or not text:
+        return {"ok": False, "error": "missing_key_or_text"}
+
+    url = "https://api-free.deepl.com/v2/translate"
+    headers = {"Authorization": f"DeepL-Auth-Key {api_key}"}
+    data = {"text": text, "target_lang": target_lang}
+    r = requests.post(url, headers=headers, data=data, timeout=25)
+    if r.status_code != 200:
+        return {"ok": False, "error": f"HTTP {r.status_code}", "raw": r.text[:500]}
+    j = r.json()
+    out = (j.get("translations") or [{}])[0].get("text", "")
+    return {"ok": True, "text": out}
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def translate_papago(client_id: str, client_secret: str, text: str, source: str = "ko", target: str = "en") -> Dict[str, Any]:
+    """
+    Naver Papago NMT API (requires client_id + client_secret)
+    https://developers.naver.com/docs/papago/papago-nmt-overview.md
+    """
+    client_id = _nonempty(client_id)
+    client_secret = _nonempty(client_secret)
+    text = _nonempty(text)
+    if not client_id or not client_secret or not text:
+        return {"ok": False, "error": "missing_credentials_or_text"}
+
+    url = "https://openapi.naver.com/v1/papago/n2mt"
+    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+    data = {"source": source, "target": target, "text": text}
+    r = requests.post(url, headers=headers, data=data, timeout=25)
+    if r.status_code != 200:
+        return {"ok": False, "error": f"HTTP {r.status_code}", "raw": r.text[:500]}
+    j = r.json()
+    out = j.get("message", {}).get("result", {}).get("translatedText", "")
+    return {"ok": True, "text": out}
+
+def weather_micro_advice(weather_json: Dict[str, Any], lang: str = "ko") -> str:
+    """
+    외부 API 데이터 기반 '마이크로 조언' (룰 기반)
+    """
+    try:
+        w = weather_json["weather"][0]["main"].lower()
+        desc = weather_json["weather"][0].get("description", "")
+        temp = weather_json["main"].get("temp")
+        feels = weather_json["main"].get("feels_like")
+        hum = weather_json["main"].get("humidity")
+        wind = weather_json["wind"].get("speed")
+    except Exception:
+        return "날씨 데이터 파싱 실패(응답 구조 확인 필요)."
+
+    if lang == "en":
+        tips = []
+        tips.append(f"Weather: {desc} | Temp {temp}°C (feels {feels}°C), humidity {hum}%, wind {wind} m/s.")
+        if "rain" in w or "drizzle" in w or "thunderstorm" in w:
+            tips.append("Plan: choose an indoor study spot + allow commute buffer; keep devices/notes protected.")
+        elif "snow" in w:
+            tips.append("Plan: add extra commute time; prioritize online tasks (drafting, reviewing) over errands.")
+        elif "clear" in w:
+            tips.append("Plan: do one outdoor walk break; keep long-focus blocks (50–10) for writing and drills.")
+        elif "cloud" in w or "mist" in w or "fog" in w:
+            tips.append("Plan: start with quick wins (10–15 min) to beat low-energy vibes; then ramp up.")
+        if temp is not None and temp >= 30:
+            tips.append("Heat: hydrate + reduce high-cognitive load tasks during peak daytime; do them in the evening.")
+        if temp is not None and temp <= 0:
+            tips.append("Cold: warm-up routine (5 min) before deep work; keep hands warm for typing/writing.")
+        return " ".join(tips)
+
+    tips = []
+    tips.append(f"날씨: {desc} | 기온 {temp}°C(체감 {feels}°C), 습도 {hum}%, 바람 {wind}m/s.")
+    if "rain" in w or "drizzle" in w or "thunderstorm" in w:
+        tips.append("추천: 실내 집중 과제(자소서/오답정리)로 가고, 이동 시간 버퍼 + 준비물 방수.")
+    elif "snow" in w:
+        tips.append("추천: 이동 리스크↑ → 온라인/집중형 작업 위주(원서 체크리스트/로드맵 점검).")
+    elif "clear" in w:
+        tips.append("추천: 산책 10분으로 리프레시하고, 긴 집중 블록(50–10)으로 글/문풀 몰아치기.")
+    elif "cloud" in w or "mist" in w or "fog" in w:
+        tips.append("추천: 컨디션 애매하면 10분 '시동' 작업(요약/정리)→ 그 다음 딥워크로 진입.")
+    if temp is not None and temp >= 30:
+        tips.append("폭염: 수분/카페인 조절, 고난도 작업은 저녁으로 미루기.")
+    if temp is not None and temp <= 0:
+        tips.append("한파: 워밍업 5분 후 딥워크, 손 시림 대비.")
+    return " ".join(tips)
 
 # =========================================================
 # CSV Auto Validation Report + Data Trust Score
 # =========================================================
 def csv_validation_report(df_raw: pd.DataFrame) -> Dict[str, Any]:
-    """
-    필수 컬럼 누락 / 이상치 / 중복 / route_detail 커버리지 점검 리포트
-    (df_raw: read_csv 직후 원본)
-    """
     rep: Dict[str, Any] = {"ok": True, "issues": [], "stats": {}}
 
     if df_raw is None or df_raw.empty:
@@ -162,7 +317,6 @@ def csv_validation_report(df_raw: pd.DataFrame) -> Dict[str, Any]:
         rep["ok"] = False
         rep["issues"].append(f"필수 컬럼 누락: {missing_required}")
 
-    # 중복 체크(가능한 경우)
     key_cols = [c for c in ["university", "major", "route", "route_detail", "year", "metric"] if c in cols]
     if key_cols:
         tmp = df_raw.copy()
@@ -174,7 +328,6 @@ def csv_validation_report(df_raw: pd.DataFrame) -> Dict[str, Any]:
     else:
         rep["stats"]["duplicates_by_key"] = None
 
-    # 이상치(연도/threshold)
     tmp2 = df_raw.copy()
     tmp2.columns = cols
 
@@ -192,7 +345,6 @@ def csv_validation_report(df_raw: pd.DataFrame) -> Dict[str, Any]:
         if bad_th > 0:
             rep["issues"].append(f"threshold 이상치/결측: {bad_th}")
 
-    # route_detail 커버리지(수시인데 route_detail 비어있으면 경로 분리 불가)
     if "route" in cols and "route_detail" in cols:
         r = tmp2["route"].astype(str).str.strip()
         rd = tmp2["route_detail"].astype(str).fillna("").str.strip()
@@ -207,12 +359,7 @@ def csv_validation_report(df_raw: pd.DataFrame) -> Dict[str, Any]:
     rep["ok"] = rep["ok"] and (len(rep["issues"]) == 0)
     return rep
 
-
 def data_trust_score(df_norm: pd.DataFrame, report: Dict[str, Any]) -> Tuple[int, List[str]]:
-    """
-    0~100 데이터 신뢰도 점수(설명용) + 감점 사유
-    - 데이터 볼륨/결측/중복/커버리지/연도 다양성 기반
-    """
     score = 100
     reasons: List[str] = []
 
@@ -264,7 +411,6 @@ def data_trust_score(df_norm: pd.DataFrame, report: Dict[str, Any]) -> Tuple[int
         reasons = ["정합성/커버리지 양호"] + reasons[:2]
     return score, reasons
 
-
 # =========================================================
 # Data Handling: CSV -> normalized dataframe
 # =========================================================
@@ -301,14 +447,12 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df[(df["threshold"] > 0) & (df["threshold"] < 10)]
     return df
 
-
 def _major_match(mj_input: str, mj_row: str) -> bool:
     mj_input = _nonempty(mj_input)
     mj_row = _nonempty(mj_row)
     if not mj_input or not mj_row:
         return True
     return (mj_input in mj_row) or (mj_row in mj_input)
-
 
 def match_rows(
     df: pd.DataFrame,
@@ -342,7 +486,6 @@ def match_rows(
     sub = sub.sort_values("year", ascending=True).head(max_rows)
     return sub
 
-
 # =========================================================
 # Explainable Scoring
 # =========================================================
@@ -353,10 +496,8 @@ class ScoreWeights:
     constraints: float
     preference_fit: float
 
-
 def extracurricular_score(level: str) -> float:
     return {"낮음": 20.0, "보통": 60.0, "높음": 90.0}.get(level, 60.0)
-
 
 def constraints_penalty(constraints: List[str]) -> float:
     p = 0.0
@@ -370,7 +511,6 @@ def constraints_penalty(constraints: List[str]) -> float:
         else:
             p += 10
     return min(p, 45.0)
-
 
 def preference_fit_score(activity_pref: List[str], route: str, route_detail: str) -> float:
     s = 50.0
@@ -403,15 +543,7 @@ def preference_fit_score(activity_pref: List[str], route: str, route_detail: str
 
     return clamp(s, 0.0, 100.0)
 
-
-def academics_score(
-    user_value: Optional[float],
-    ref_series: Optional[pd.Series],
-) -> Tuple[float, str, Optional[float]]:
-    """
-    Score 0..100. Lower grade is better.
-    - If ref exists: anchor = most recent threshold (last year)
-    """
+def academics_score(user_value: Optional[float], ref_series: Optional[pd.Series]) -> Tuple[float, str, Optional[float]]:
     if user_value is None:
         return 50.0, "성적 입력이 없어 학업 점수는 중립(50)으로 처리했습니다.", None
 
@@ -435,21 +567,13 @@ def academics_score(
 
     return s, msg, anchor
 
-
 def normalize_weights(w: ScoreWeights) -> ScoreWeights:
     s = w.academics + w.extracurricular + w.constraints + w.preference_fit
     if s <= 0:
         return ScoreWeights(0.45, 0.25, 0.2, 0.1)
     return ScoreWeights(w.academics / s, w.extracurricular / s, w.constraints / s, w.preference_fit / s)
 
-
-def total_score(
-    w: ScoreWeights,
-    acad: float,
-    extra: float,
-    penalty: float,
-    fit: float,
-) -> Tuple[float, Dict[str, float]]:
+def total_score(w: ScoreWeights, acad: float, extra: float, penalty: float, fit: float) -> Tuple[float, Dict[str, float]]:
     wn = normalize_weights(w)
 
     contrib_acad = acad * wn.academics
@@ -469,7 +593,6 @@ def total_score(
     }
     return score, breakdown
 
-
 def score_to_band(score: float) -> str:
     if score >= 75:
         return "안정"
@@ -477,15 +600,7 @@ def score_to_band(score: float) -> str:
         return "적정"
     return "도전"
 
-
-def abc_scores(
-    base_score: float,
-    constraints: List[str],
-    priorities: List[str],
-) -> Dict[str, Dict[str, Any]]:
-    """
-    A/B/C 점수화(설명가능 규칙)
-    """
+def abc_scores(base_score: float, constraints: List[str], priorities: List[str]) -> Dict[str, Dict[str, Any]]:
     n_constraints = len(constraints)
     risk_factor = clamp(n_constraints / 4.0, 0.0, 1.0)  # 0~1
 
@@ -508,17 +623,7 @@ def abc_scores(
         out[k]["band"] = score_to_band(out[k]["score"])
     return out
 
-
-def abc_scores_by_route_detail(
-    base_score: float,
-    constraints: List[str],
-    priorities: List[str],
-    route: str,
-    route_detail: str,
-) -> Dict[str, Any]:
-    """
-    수시일 때 route_detail에 따라 A/B/C를 '경로별로' 조금 다르게 점수화(설명용).
-    """
+def abc_scores_by_route_detail(base_score: float, constraints: List[str], priorities: List[str], route: str, route_detail: str) -> Dict[str, Any]:
     abc = abc_scores(base_score, constraints, priorities)
 
     if route != "수시":
@@ -549,19 +654,10 @@ def abc_scores_by_route_detail(
 
     return {"selected_route_detail": picked, "variants": variants}
 
-
 # =========================================================
 # OpenAI Responses API (optional)
 # =========================================================
-def openai_generate_plan(
-    api_key: str,
-    model: str,
-    payload_json: Dict[str, Any],
-    context_docs: List[Dict[str, str]],
-) -> Dict[str, Any]:
-    """
-    Uses Responses API. Requests JSON object output.
-    """
+def openai_generate_plan(api_key: str, model: str, payload_json: Dict[str, Any], context_docs: List[Dict[str, str]]) -> Dict[str, Any]:
     url = "https://api.openai.com/v1/responses"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -582,39 +678,12 @@ JSON 스키마:
 {{
   "summary_5lines": [string, string, string, string, string],
   "routes": {{
-    "A": {{
-      "title": "안정",
-      "reasons": [string, string, string],
-      "actions": [string, string, string, string, string],
-      "risks": [string, string]
-    }},
-    "B": {{
-      "title": "적정",
-      "reasons": [string, string, string],
-      "actions": [string, string, string, string, string],
-      "risks": [string, string]
-    }},
-    "C": {{
-      "title": "도전",
-      "reasons": [string, string, string],
-      "actions": [string, string, string, string, string],
-      "risks": [string, string]
-    }}
+    "A": {{"title":"안정","reasons":[string,string,string],"actions":[string,string,string,string,string],"risks":[string,string]}},
+    "B": {{"title":"적정","reasons":[string,string,string],"actions":[string,string,string,string,string],"risks":[string,string]}},
+    "C": {{"title":"도전","reasons":[string,string,string],"actions":[string,string,string,string,string],"risks":[string,string]}}
   }},
-  "roadmap": [
-    {{
-      "week": number,
-      "goal": string,
-      "tasks": [string, string, string],
-      "deliverable": string
-    }}
-  ],
-  "evidence": [
-    {{
-      "title": string,
-      "note": string
-    }}
-  ]
+  "roadmap": [{{"week": number,"goal": string,"tasks":[string,string,string],"deliverable": string}}],
+  "evidence": [{{"title": string,"note": string}}]
 }}
 
 [사용자 입력(JSON)]
@@ -626,12 +695,7 @@ JSON 스키마:
 
     body = {
         "model": model,
-        "input": [
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            }
-        ],
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
         "text": {"format": {"type": "json_object"}},
     }
 
@@ -657,7 +721,6 @@ JSON 스키마:
         if start != -1 and end != -1 and end > start:
             return json.loads(text_out[start : end + 1])
         raise
-
 
 # =========================================================
 # Rule-based fallback
@@ -703,28 +766,115 @@ def rule_based_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     for w in range(1, 9):
         if route == "정시":
             goal = "실전 점수 안정화" if w <= 3 else ("약점 보완 집중" if w <= 6 else "실전 루틴 고정")
-            tasks = [
-                "기출/모의 1회분 풀이",
-                "오답 원인 분류(개념/시간/실수)",
-                "취약 단원 1개 보완",
-            ]
+            tasks = ["기출/모의 1회분 풀이", "오답 원인 분류(개념/시간/실수)", "취약 단원 1개 보완"]
             deliverable = f"Week {w}: 오답 분류표 + 취약 단원 계획"
         else:
             goal = "지원전략 확정" if w <= 2 else ("자소서/활동 정리" if w <= 5 else "면접/논술 대비")
-            tasks = [
-                "전형 요강 체크 + 제출물 목록화",
-                "활동 3개 STAR 정리",
-                "자소서/면접 질문 5개 초안 작성",
-            ]
+            tasks = ["전형 요강 체크 + 제출물 목록화", "활동 3개 STAR 정리", "자소서/면접 질문 5개 초안 작성"]
             deliverable = f"Week {w}: {route_detail or '수시'} 산출물 1종 초안"
         roadmap.append({"week": w, "goal": goal, "tasks": tasks, "deliverable": deliverable})
 
     evidence = [{"title": "일반 전략 가이드", "note": "키 미입력/데이터 범위 밖 시 룰베이스로 제공"}]
     return {"summary_5lines": summary, "routes": routes, "roadmap": roadmap, "evidence": evidence}
 
+# =========================================================
+# PDF Export (심화 B)
+# =========================================================
+def _wrap_text(text: str, max_len: int = 95) -> List[str]:
+    text = text or ""
+    lines: List[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if len(buf) >= max_len and ch == " ":
+            lines.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        lines.append(buf.strip())
+    if not lines:
+        return [""]
+    return lines
+
+def build_pdf_report_bytes(report: Dict[str, Any], title: str = "Y-Compass Report") -> bytes:
+    buff = io.BytesIO()
+    c = canvas.Canvas(buff, pagesize=A4)
+    width, height = A4
+
+    x = 40
+    y = height - 50
+
+    def draw_line(line: str, dy: int = 14, font: str = "Helvetica", size: int = 10):
+        nonlocal y
+        c.setFont(font, size)
+        c.drawString(x, y, line[:1400])
+        y -= dy
+        if y < 60:
+            c.showPage()
+            y = height - 50
+
+    c.setTitle(title)
+    draw_line(title, dy=18, font="Helvetica-Bold", size=14)
+    draw_line(f"Generated: {date.today().isoformat()}", dy=18, font="Helvetica", size=10)
+    draw_line("")
+
+    payload = report.get("payload", {})
+    plan = {
+        "summary_5lines": report.get("summary_5lines", []),
+        "routes": report.get("routes", {}),
+        "roadmap": report.get("roadmap", []),
+        "evidence": report.get("evidence", []),
+    }
+
+    draw_line("[1] Key Summary", font="Helvetica-Bold", size=12)
+    for s in plan.get("summary_5lines", [])[:5]:
+        for ln in _wrap_text(f"- {s}", 105):
+            draw_line(ln)
+    draw_line("")
+
+    draw_line("[2] Score Snapshot", font="Helvetica-Bold", size=12)
+    draw_line(f"- Total Score: {payload.get('score_total')}")
+    draw_line(f"- Band: {payload.get('band_label')}")
+    draw_line(f"- Coverage: {'Data' if payload.get('coverage_is_data') else 'Guide'}")
+    bd = payload.get("score_breakdown", {}) or {}
+    draw_line(f"- Breakdown: {json.dumps(bd, ensure_ascii=False)}")
+    draw_line("")
+
+    draw_line("[3] A/B/C Routes", font="Helvetica-Bold", size=12)
+    routes = plan.get("routes", {}) or {}
+    for k in ["A", "B", "C"]:
+        r = routes.get(k, {})
+        draw_line(f"{k}. {r.get('title','')}", font="Helvetica-Bold", size=11)
+        for s in (r.get("reasons") or [])[:3]:
+            for ln in _wrap_text(f"  - Reason: {s}", 105):
+                draw_line(ln)
+        for s in (r.get("actions") or [])[:5]:
+            for ln in _wrap_text(f"  - Action: {s}", 105):
+                draw_line(ln)
+        for s in (r.get("risks") or [])[:2]:
+            for ln in _wrap_text(f"  - Risk: {s}", 105):
+                draw_line(ln)
+        draw_line("")
+
+    draw_line("[4] 8-Week Roadmap", font="Helvetica-Bold", size=12)
+    for item in (plan.get("roadmap") or [])[:8]:
+        draw_line(f"Week {item.get('week')}: {item.get('goal','')}", font="Helvetica-Bold", size=11)
+        for tsk in (item.get("tasks") or [])[:3]:
+            for ln in _wrap_text(f"  - {tsk}", 105):
+                draw_line(ln)
+        draw_line(f"  - Deliverable: {item.get('deliverable','')}")
+        draw_line("")
+
+    draw_line("[5] Evidence (Sources)", font="Helvetica-Bold", size=12)
+    for ev in (plan.get("evidence") or [])[:20]:
+        draw_line(f"- {ev.get('title','')}")
+        for ln in _wrap_text(f"  {ev.get('note','')}", 105):
+            draw_line(ln)
+
+    c.save()
+    return buff.getvalue()
 
 # =========================================================
-# Session State
+# Session State (히스토리 포함)
 # =========================================================
 if "df_data" not in st.session_state:
     st.session_state.df_data = pd.DataFrame()
@@ -742,16 +892,22 @@ if "csv_report" not in st.session_state:
     st.session_state.csv_report = None
 if "data_trust" not in st.session_state:
     st.session_state.data_trust = None
-
+if "history" not in st.session_state:
+    st.session_state.history = []  # list[dict]: {id, payload, result, report}
 
 # =========================================================
 # Header
 # =========================================================
-st.title("🧭 Y-Compass (와이컴퍼스)")
-st.caption("연세대 AX 캠프 Track 1 — 소그룹 챌린지 | 근거 기반 AI 진학 카운셀러 (MVP+)")
+# Sidebar first (language)
+with st.sidebar:
+    st.header("🌐 Language / 언어")
+    ui_lang = st.selectbox("UI Language", ["ko", "en"], index=0)
+
+st.title(t("app_title", ui_lang))
+st.caption(t("subtitle", ui_lang))
 
 # =========================================================
-# Sidebar
+# Sidebar (Keys + UX controls)
 # =========================================================
 with st.sidebar:
     st.header("🔑 OpenAI (선택)")
@@ -760,8 +916,33 @@ with st.sidebar:
     openai_model = st.text_input("모델", value="gpt-4.1-mini")
 
     st.divider()
+    st.header("🌦️ OpenWeatherMap (날씨 API)")
+    # user provided key (can hardcode, but safer: default value here)
+    owm_default = st.secrets.get("OPENWEATHER_API_KEY", "d37e79836cacd29a16ecdd370963270a")
+    openweather_key = st.text_input("OpenWeatherMap API Key", value=owm_default, type="password")
+    weather_city = st.text_input("도시(예: Seoul)", value="Seoul")
+
+    st.divider()
+    st.header("📰 NewsAPI (뉴스 API)")
+    news_default = st.secrets.get("NEWS_API_KEY", "")
+    news_api_key = st.text_input("NewsAPI Key", value=news_default, type="password")
+    news_query = st.text_input("뉴스 키워드(예: 대학입시 OR 교육정책 OR 수능)", value="대학입시 OR 교육정책")
+
+    st.divider()
+    st.header("🌐 Translation API (선택)")
+    translator = st.selectbox("번역 엔진", ["Off", "DeepL", "Papago"], index=0)
+    deepl_key = ""
+    papago_id = ""
+    papago_secret = ""
+    if translator == "DeepL":
+        deepl_key = st.text_input("DeepL Auth Key", value=st.secrets.get("DEEPL_API_KEY", ""), type="password")
+    elif translator == "Papago":
+        papago_id = st.text_input("Papago Client ID", value=st.secrets.get("PAPAGO_CLIENT_ID", ""), type="password")
+        papago_secret = st.text_input("Papago Client Secret", value=st.secrets.get("PAPAGO_CLIENT_SECRET", ""), type="password")
+
+    st.divider()
     st.header("⚙️ 점수 가중치(설명가능성)")
-    st.caption("총점은 0~100. 제약은 감점이며, 기여도(breakdown)를 공개합니다.")
+    st.caption("총점 0~100. 제약은 감점이며, 기여도(breakdown)를 공개합니다.")
     w_acad = st.slider("학업(성적)", 0.0, 1.0, 0.45, 0.05)
     w_extra = st.slider("비교과", 0.0, 1.0, 0.25, 0.05)
     w_const = st.slider("제약(감점)", 0.0, 1.0, 0.20, 0.05)
@@ -769,19 +950,28 @@ with st.sidebar:
     weights = ScoreWeights(w_acad, w_extra, w_const, w_fit)
 
     st.divider()
-    st.header("💳 상용화(티어) 초안")
-    tier = st.selectbox("요금제(데모)", ["Free", "Basic", "Pro"])
-    tier_desc = {
-        "Free": "진단 + A/B/C 요약 + 2주 미니 체크리스트",
-        "Basic": "A/B/C 상세 + 8주 로드맵 + 근거 보기",
-        "Pro": "전형별 심화(자소서/면접 포인트) + PDF/저장/버전관리(컨셉)",
-    }
-    st.write(f"**{tier}**: {tier_desc[tier]}")
-
-    st.divider()
     today = st.date_input("현재 시점(로드맵 기준)", value=date.today())
 
-tabs = st.tabs(["🗃️ 데이터 업로드", "📝 진단 입력", "📌 결과", "📎 리포트/기획서"])
+    st.divider()
+    st.header("🕘 히스토리")
+    if st.session_state.history:
+        labels = [f"{i+1}) {h.get('id','')} | {h.get('payload',{}).get('route','')}/{h.get('payload',{}).get('desired_university','')}" for i, h in enumerate(st.session_state.history)]
+        pick = st.selectbox("저장된 기록 불러오기", ["(선택 안 함)"] + labels, index=0)
+        if pick != "(선택 안 함)":
+            idx = int(pick.split(")")[0]) - 1
+            sel = st.session_state.history[idx]
+            if st.button("↩️ 이 기록으로 복원(결과 탭에 표시)"):
+                st.session_state.payload = sel.get("payload")
+                st.session_state.result = sel.get("result")
+                st.session_state.evidence = sel.get("report", {}).get("evidence", []) or []
+                st.session_state.csv_report = sel.get("report", {}).get("csv_validation_report")
+                st.session_state.data_trust = sel.get("report", {}).get("data_trust")
+                st.success("복원 완료! '📌 결과' 탭으로 이동해 확인해줘.")
+
+# =========================================================
+# Tabs
+# =========================================================
+tabs = st.tabs(["🗃️ 데이터 업로드", "📝 진단 입력", "📌 결과", "🌦️ 날씨/뉴스", "📎 리포트/기획서"])
 
 # =========================================================
 # Tab 1: Data Upload
@@ -815,8 +1005,6 @@ with tabs[0]:
     if uploaded is not None:
         try:
             df_raw = pd.read_csv(uploaded)
-
-            # ✅ 자동 검증 리포트(심사자용)
             rep = csv_validation_report(df_raw)
             st.session_state.csv_report = rep
             with st.expander("🧪 CSV 자동 검증 리포트(필수 컬럼/이상치/중복/route_detail 커버리지)", expanded=True):
@@ -825,7 +1013,6 @@ with tabs[0]:
             df = normalize_df(df_raw)
             st.session_state.df_data = df
 
-            # ✅ 데이터 신뢰도 점수
             trust, reasons = data_trust_score(df, rep)
             st.session_state.data_trust = {"score": trust, "reasons": reasons}
             st.metric("데이터 신뢰도 점수(0~100)", trust)
@@ -875,7 +1062,7 @@ with tabs[1]:
         c1, c2 = st.columns(2, gap="large")
 
         with c1:
-            st.markdown("#### 1) 희망 전형 입력(피드백 반영 핵심)")
+            st.markdown("#### 1) 희망 전형 입력")
             grade_status = st.selectbox("학년/상태", ["고3", "N수(재수/삼수)", "고2(미리보기)"])
             route = st.selectbox("수시/정시", ADMISSION_ROUTE)
             route_detail = ""
@@ -913,7 +1100,6 @@ with tabs[1]:
         metric = "mock" if route == "정시" else "gpa"
         user_metric_value = mock_val if metric == "mock" else gpa_val
 
-        # Allow fallback parsing from free text
         uni = _nonempty(desired_university)
         mj = _nonempty(desired_major)
         if not uni and _nonempty(desired_text):
@@ -978,7 +1164,6 @@ with tabs[1]:
         st.session_state.score_breakdown = breakdown
         st.session_state.abc = abc
 
-        # Evidence docs (RAG context)
         evidence_docs: List[Dict[str, str]] = []
         if is_data_based:
             tail = matched.sort_values("year").tail(12)
@@ -995,6 +1180,20 @@ with tabs[1]:
             )
 
         st.session_state.evidence = evidence_docs
+
+        # 외부 API (날씨/뉴스) 데이터도 payload에 넣어 "기능 확장" 증빙
+        weather_pack = fetch_weather_openweather(openweather_key, weather_city, lang=("kr" if ui_lang == "ko" else "en"))
+        payload["external_weather_ok"] = bool(weather_pack.get("ok"))
+        payload["external_weather_city"] = weather_city
+        if weather_pack.get("ok"):
+            payload["external_weather_summary"] = weather_micro_advice(weather_pack["data"], lang=ui_lang)
+
+        news_pack = fetch_news_newsapi(news_api_key, news_query, language=("ko" if ui_lang == "ko" else "en"))
+        payload["external_news_ok"] = bool(news_pack.get("ok"))
+        payload["external_news_query"] = news_query
+        if news_pack.get("ok"):
+            arts = (news_pack["data"].get("articles") or [])[:6]
+            payload["external_news_titles"] = [a.get("title", "") for a in arts if a.get("title")]
 
         with st.spinner("A/B/C 추천 + 8주 로드맵 생성 중..."):
             try:
@@ -1014,9 +1213,26 @@ with tabs[1]:
                     "score_breakdown": payload["score_breakdown"],
                     "abc_scores": payload["abc_scores"],
                     "academics_msg": acad_msg,
+                    "external_weather": payload.get("external_weather_summary", ""),
+                    "external_news_titles": payload.get("external_news_titles", []),
                 }
 
                 st.session_state.result = plan
+
+                # 히스토리 저장(세션)
+                hist_id = f"{date.today().isoformat()}_{len(st.session_state.history)+1:02d}"
+                report = {
+                    "payload": payload,
+                    "summary_5lines": plan.get("summary_5lines", []),
+                    "routes": plan.get("routes", {}),
+                    "roadmap": plan.get("roadmap", []),
+                    "evidence": plan.get("evidence", []),
+                    "meta": plan.get("_meta", {}),
+                    "csv_validation_report": st.session_state.get("csv_report"),
+                    "data_trust": st.session_state.get("data_trust"),
+                }
+                st.session_state.history.insert(0, {"id": hist_id, "payload": payload, "result": plan, "report": report})
+
                 st.success("완료! '📌 결과' 탭에서 확인해줘.")
             except Exception as e:
                 st.session_state.result = None
@@ -1027,11 +1243,6 @@ with tabs[1]:
 # Charts (Altair helpers)
 # =========================================================
 def chart_threshold_vs_user(chart_df: pd.DataFrame, anchor: Optional[float], is_data_based: bool) -> alt.Chart:
-    """
-    chart_df: columns = ['year','threshold','user_value']
-    Lower is better -> reverse Y axis.
-    + Annotations(3)
-    """
     long_df = chart_df.melt(id_vars=["year"], value_vars=["threshold", "user_value"], var_name="series", value_name="value")
     long_df["series"] = long_df["series"].replace({"threshold": "기준선(threshold)", "user_value": "내 성적(user)"})
 
@@ -1039,11 +1250,7 @@ def chart_threshold_vs_user(chart_df: pd.DataFrame, anchor: Optional[float], is_
         x=alt.X("year:O", title="연도"),
         y=alt.Y("value:Q", title="등급(낮을수록 유리)", scale=alt.Scale(reverse=True)),
         color=alt.Color("series:N", title=""),
-        tooltip=[
-            alt.Tooltip("year:O", title="연도"),
-            alt.Tooltip("series:N", title="항목"),
-            alt.Tooltip("value:Q", title="값", format=".2f"),
-        ],
+        tooltip=[alt.Tooltip("year:O", title="연도"), alt.Tooltip("series:N", title="항목"), alt.Tooltip("value:Q", title="값", format=".2f")],
     )
 
     y_min = float(chart_df[["threshold", "user_value"]].min().min())
@@ -1068,12 +1275,10 @@ def chart_threshold_vs_user(chart_df: pd.DataFrame, anchor: Optional[float], is_
 
     return (line + annotations).properties(height=260)
 
-
 def chart_breakdown(breakdown: Dict[str, float]) -> alt.Chart:
     keys = ["학업(성적)", "비교과", "적합도(성향↔전형)", "제약(감점)"]
     rows = [{"요소": k, "기여도": float(breakdown.get(k, 0.0))} for k in keys]
     df = pd.DataFrame(rows)
-
     return (
         alt.Chart(df)
         .mark_bar()
@@ -1084,7 +1289,6 @@ def chart_breakdown(breakdown: Dict[str, float]) -> alt.Chart:
         )
         .properties(height=220)
     )
-
 
 def chart_abc_scores(abc: Dict[str, Dict[str, Any]]) -> alt.Chart:
     df = pd.DataFrame(
@@ -1110,14 +1314,8 @@ def chart_abc_scores(abc: Dict[str, Dict[str, Any]]) -> alt.Chart:
 # =========================================================
 with tabs[2]:
     st.subheader("📌 결과")
+    st.warning(t("policy", ui_lang))
 
-    # ✅ 환각 방지 정책(필수)
-    st.warning(
-        "⚠️ 환각 방지 정책: 본 앱은 업로드된 CSV/근거(expander)에 없는 수치·요강을 '사실'로 단정하지 않습니다. "
-        "커버리지 밖에서는 '일반 가이드'로만 안내하며, 합격 확률/보장 표현을 사용하지 않습니다."
-    )
-
-    # ✅ 데이터 신뢰도 점수(있으면 표시)
     trust_pack = st.session_state.get("data_trust") or {}
     if isinstance(trust_pack, dict) and trust_pack.get("score") is not None:
         st.metric("데이터 신뢰도 점수(0~100)", trust_pack.get("score"))
@@ -1147,8 +1345,6 @@ with tabs[2]:
         st.caption("총점(0~100) = (학업*가중치 + 비교과*가중치 + 적합도*가중치) - (제약*가중치)")
 
         st.divider()
-
-        # --- Section 1
         st.markdown("## 섹션 1 — 내가 원하는 전형 가능성 카드")
 
         col1, col2, col3 = st.columns([1.2, 1.2, 2.4], gap="large")
@@ -1156,13 +1352,13 @@ with tabs[2]:
         with col1:
             with st.container(border=True):
                 st.markdown('<div class="card-title">커버리지</div>', unsafe_allow_html=True)
-                st.markdown(coverage_badge_html(payload["coverage_is_data"]), unsafe_allow_html=True)
+                st.markdown(coverage_badge_html(payload["coverage_is_data"], ui_lang), unsafe_allow_html=True)
                 st.markdown('<div class="small">데이터 기반이면 연도/출처 근거 및 그래프 제공</div>', unsafe_allow_html=True)
 
         with col2:
             with st.container(border=True):
                 st.markdown('<div class="card-title">가능성 구간(안정/적정/도전)</div>', unsafe_allow_html=True)
-                st.markdown(band_badge_html(payload["band_label"]), unsafe_allow_html=True)
+                st.markdown(band_badge_html(payload["band_label"], ui_lang), unsafe_allow_html=True)
                 st.metric("총점(0~100)", f"{payload['score_total']:.1f}", help="가중치 기반 설명가능 점수")
                 if payload.get("metric_value") is None:
                     st.caption("성적 미입력 → 학업 점수는 중립 처리")
@@ -1175,6 +1371,28 @@ with tabs[2]:
                 st.write(meta.get("academics_msg", ""))
                 bd = payload["score_breakdown"]
                 st.altair_chart(chart_breakdown(bd), use_container_width=True)
+
+        # ✅ 외부 API 기능 확장 표시(날씨/뉴스)
+        st.markdown("### 🔌 외부 API 기반 추가 인사이트(심화 A 증빙)")
+        wx = meta.get("external_weather", "")
+        nt = meta.get("external_news_titles", []) or []
+        cwx, cnews = st.columns([1, 1], gap="large")
+        with cwx:
+            with st.container(border=True):
+                st.markdown("**🌦️ 날씨 기반 오늘의 공부/이동 조언**")
+                if payload.get("external_weather_ok") and wx:
+                    st.write(wx)
+                else:
+                    st.caption("날씨 API 키/도시 설정 후 진단을 다시 생성하면 표시됩니다.")
+        with cnews:
+            with st.container(border=True):
+                st.markdown("**📰 실시간 뉴스(제목) 기반 체크리스트**")
+                if payload.get("external_news_ok") and nt:
+                    for i, title in enumerate(nt[:6], 1):
+                        st.write(f"{i}. {title}")
+                    st.caption("※ 뉴스는 '제목/발행 시각'만 근거로 표시(내용 단정/추론 최소화).")
+                else:
+                    st.caption("NewsAPI 키/키워드 설정 후 진단을 다시 생성하면 표시됩니다.")
 
         st.divider()
 
@@ -1204,12 +1422,9 @@ with tabs[2]:
             else:
                 st.info("시각화할 매칭 데이터가 없습니다(학과명/전형 키워드 확인).")
         else:
-            st.markdown("### 근거 시각화")
-            st.info("현재는 **가이드 기반**이거나(데이터 미보유), 데이터 업로드가 없어 그래프를 표시하지 않습니다.")
+            st.info("현재는 **가이드 기반**이거나 데이터 업로드가 없어 그래프를 표시하지 않습니다.")
 
         st.divider()
-
-        # --- A/B/C Score Chart
         st.markdown("## 섹션 2 — A/B/C 추천 점수화(설명가능성 강화)")
         abc = payload.get("abc_scores") or {}
         if abc:
@@ -1218,7 +1433,6 @@ with tabs[2]:
         else:
             st.warning("A/B/C 점수화 결과가 없습니다.")
 
-        # --- (수시) route_detail 분리 점수(설명용)
         st.markdown("### 🧭 A/B/C 경로별 점수(수시 세부전형 분리)")
         pack = payload.get("abc_scores_by_route_detail", {})
         variants = pack.get("variants", {})
@@ -1232,8 +1446,6 @@ with tabs[2]:
             st.caption("※ 동일 총점을 기반으로, 전형 특성(변동성/정량성)에 따라 A/B/C를 미세 조정한 '설명용 분리'입니다.")
 
         st.divider()
-
-        # --- A/B/C cards
         st.markdown("## 섹션 3 — AI 추천 전형/전략 TOP3 (A/B/C)")
         routes = plan.get("routes", {})
         cols = st.columns(3, gap="large")
@@ -1263,8 +1475,6 @@ with tabs[2]:
                         st.write(f"- {x}")
 
         st.divider()
-
-        # --- 8-week Roadmap
         st.markdown("## 섹션 4 — 8주 로드맵")
         roadmap = plan.get("roadmap", [])
         if not roadmap:
@@ -1274,14 +1484,12 @@ with tabs[2]:
                 w = item.get("week")
                 with st.expander(f"Week {w} — {item.get('goal','')}", expanded=(w == 1)):
                     st.markdown("**할 일(2~3)**")
-                    for t in (item.get("tasks") or [])[:3]:
-                        st.write(f"- {t}")
+                    for tsk in (item.get("tasks") or [])[:3]:
+                        st.write(f"- {tsk}")
                     st.markdown("**산출물**")
                     st.write(item.get("deliverable", ""))
 
         st.divider()
-
-        # --- Evidence
         st.markdown("### 근거 보기(출처)")
         evs = plan.get("evidence", []) or st.session_state.evidence or []
         if evs:
@@ -1292,9 +1500,8 @@ with tabs[2]:
             st.caption("표시할 근거가 없습니다.")
 
         st.divider()
-
-        # --- Download
         st.markdown("### 결과 저장(제출/시연용)")
+
         report = {
             "payload": payload,
             "summary_5lines": plan.get("summary_5lines", []),
@@ -1305,17 +1512,125 @@ with tabs[2]:
             "csv_validation_report": st.session_state.get("csv_report"),
             "data_trust": st.session_state.get("data_trust"),
         }
+
+        # ✅ 번역 기능(선택): 결과 요약/핵심만 번역해서 별도 다운로드 제공
+        trans_block = ""
+        if translator != "Off":
+            base_text = "\n".join(plan.get("summary_5lines", [])[:5])
+            if base_text.strip():
+                if translator == "DeepL" and _nonempty(deepl_key):
+                    res = translate_deepl(deepl_key, base_text, target_lang=("EN" if ui_lang == "ko" else "KO"))
+                    if res.get("ok"):
+                        trans_block = res.get("text", "")
+                elif translator == "Papago" and _nonempty(papago_id) and _nonempty(papago_secret):
+                    res = translate_papago(
+                        papago_id, papago_secret, base_text,
+                        source=("ko" if ui_lang == "ko" else "en"),
+                        target=("en" if ui_lang == "ko" else "ko"),
+                    )
+                    if res.get("ok"):
+                        trans_block = res.get("text", "")
+
         st.download_button(
-            "📄 결과 리포트 다운로드 (.json)",
+            t("export_json", ui_lang),
             data=json.dumps(report, ensure_ascii=False, indent=2),
             file_name="y_compass_report.json",
             mime="application/json",
         )
 
+        pdf_bytes = build_pdf_report_bytes(report, title="Y-Compass Report")
+        st.download_button(
+            t("export_pdf", ui_lang),
+            data=pdf_bytes,
+            file_name="y_compass_report.pdf",
+            mime="application/pdf",
+        )
+
+        if trans_block:
+            st.markdown("#### 🌐 번역(요약 5줄)")
+            st.text_area("Translated summary", value=trans_block, height=140)
+            st.download_button(
+                "⬇️ 번역 텍스트 다운로드 (.txt)",
+                data=trans_block.encode("utf-8"),
+                file_name="y_compass_summary_translated.txt",
+                mime="text/plain",
+            )
+
 # =========================================================
-# Tab 4: Report / Spec
+# Tab 4: Weather/News (심화 A) + UX 대시보드(심화 B)
 # =========================================================
 with tabs[3]:
+    st.subheader("🌦️ 날씨/뉴스 기반 실시간 보조 인사이트 (심화 A)")
+    st.caption("외부 API를 통해 앱 기능을 '실제로' 확장: 오늘 컨디션/이동/학습 운영 + 교육/입시 키워드 뉴스 모니터링")
+
+    colw, coln = st.columns([1, 1], gap="large")
+
+    with colw:
+        st.markdown("### 🌦️ Weather (OpenWeatherMap)")
+        with st.spinner("날씨 불러오는 중..."):
+            wp = fetch_weather_openweather(openweather_key, weather_city, lang=("kr" if ui_lang == "ko" else "en"))
+        if wp.get("ok"):
+            data = wp["data"]
+            st.json(
+                {
+                    "city": data.get("name"),
+                    "weather": (data.get("weather") or [{}])[0].get("description"),
+                    "temp": data.get("main", {}).get("temp"),
+                    "feels_like": data.get("main", {}).get("feels_like"),
+                    "humidity": data.get("main", {}).get("humidity"),
+                    "wind": data.get("wind", {}).get("speed"),
+                }
+            )
+            st.success("날씨 기반 조언")
+            st.write(weather_micro_advice(data, lang=ui_lang))
+        else:
+            st.warning("날씨 호출 실패(키/도시/요청 제한 확인).")
+            st.caption(str(wp.get("error")))
+
+    with coln:
+        st.markdown("### 📰 News (NewsAPI)")
+        with st.spinner("뉴스 불러오는 중..."):
+            np = fetch_news_newsapi(news_api_key, news_query, language=("ko" if ui_lang == "ko" else "en"))
+        if np.get("ok"):
+            arts = (np["data"].get("articles") or [])[:8]
+            if not arts:
+                st.info("검색 결과가 없습니다(키워드 변경해봐).")
+            for a in arts:
+                title = a.get("title", "")
+                src = (a.get("source") or {}).get("name", "")
+                pub = a.get("publishedAt", "")
+                st.markdown(f"- **{title}**  \n  {src} · {pub}")
+            st.caption("※ 기사 내용 단정/추론 없이, 제목·출처·시각만 표시(근거 최소 단위).")
+        else:
+            st.warning("뉴스 호출 실패(키/쿼리/요청 제한 확인).")
+            st.caption(str(np.get("error")))
+
+    st.divider()
+    st.markdown("### 📊 UX 대시보드 (심화 B)")
+    st.write("아래는 앱 내부 데이터(점수/히스토리/외부 API 상태)를 한 화면에서 보여주는 '시연용 대시보드'야.")
+
+    h = st.session_state.history
+    st.metric("히스토리 저장 건수", len(h))
+    if h:
+        last = h[0].get("payload", {})
+        st.write("최근 기록 요약")
+        st.json(
+            {
+                "route": last.get("route"),
+                "route_detail": last.get("route_detail"),
+                "university": last.get("desired_university"),
+                "major": last.get("desired_major"),
+                "score_total": last.get("score_total"),
+                "band": last.get("band_label"),
+                "weather_ok": last.get("external_weather_ok"),
+                "news_ok": last.get("external_news_ok"),
+            }
+        )
+
+# =========================================================
+# Tab 5: Report / Spec
+# =========================================================
+with tabs[4]:
     st.subheader("📎 기획서/리포트 (Report Ver.)")
 
     st.markdown(
@@ -1342,7 +1657,30 @@ with tabs[3]:
 """
     )
 
-    st.markdown("## 3. 신뢰성/설명가능성(심사자 포인트)")
+    st.markdown("## 3. 심화 A — 외부 API 연동으로 기능 확장")
+    st.markdown(
+        """
+- **OpenWeatherMap(날씨)**: 오늘 날씨(비/눈/폭염/한파 등)에 따라 **학습 장소/이동/루틴 조언**을 룰 기반으로 제공  
+- **NewsAPI(뉴스)**: 교육/입시/정책 키워드로 **실시간 뉴스 타이틀 모니터링**을 제공(출처·시각 포함)  
+- **DeepL/Papago(번역)**: 결과 요약(5줄)을 **다국어로 변환**하여 다운로드 제공(선택)
+
+✅ 체크: OpenAI 외 추가 API 1개 이상 연동 + 앱 가치(정보/조언/다국어)가 실제로 확장됨
+"""
+    )
+
+    st.markdown("## 4. 심화 B — UX/기능 고도화")
+    st.markdown(
+        """
+- **히스토리 저장/복원**: 세션 내 진단 기록을 저장하고, 클릭 한 번으로 결과 복원  
+- **결과 내보내기**: JSON + PDF(ReportLab) 다운로드로 제출/공유 편의성 강화  
+- **대시보드**: 최근 기록/외부 API 상태/점수 스냅샷을 한 화면에서 확인  
+- **다국어 UI 최소 지원**: ko/en 전환 + 번역 API로 결과 확장
+
+✅ 체크: 기본 기능 외 UX 개선이 실제 가치(시연/제출/반복사용)를 높임
+"""
+    )
+
+    st.markdown("## 5. 신뢰성/설명가능성(심사자 포인트)")
     st.markdown(
         """
 - **환각 방지 정책 문구**: 근거 없는 수치/요강 단정 금지  
@@ -1353,34 +1691,16 @@ with tabs[3]:
 """
     )
 
-    st.markdown("## 4. Technical Spec")
+    st.markdown("## 6. Technical Spec")
     st.table(
         [
-            {
-                "구분": "Input Data",
-                "상세 정의": "사용자 희망 전형(직접 선택/입력) + 수시/정시 + 수시 세부 전형 + 성적(내신/모의 구간) + (선택)대학/학과 키 + 성향/비교과/제약",
-            },
-            {
-                "구분": "AI Prompting",
-                "상세 정의": "전형 존중 + 가능성/리스크/대안 제시. 근거 문서(업로드 데이터/출처) 밖 수치 단정 금지. 확률 단정 대신 안정/적정/도전 구간.",
-            },
-            {
-                "구분": "Output Format",
-                "상세 정의": "가능성 카드(커버리지 배지+점수 breakdown) / A/B/C 차트 / (수시) 세부 전형 분리 / A/B/C 카드 / 8주 로드맵 / 근거(expander) / JSON 다운로드",
-            },
+            {"구분": "Input Data", "상세 정의": "희망 전형(직접 선택) + 성적(내신/모의 구간) + (선택)대학/학과 키 + 성향/비교과/제약 + 외부 API 입력(도시/뉴스키워드/언어)"},
+            {"구분": "AI Prompting", "상세 정의": "전형 존중 + 가능성/리스크/대안 제시. 근거 문서 밖 수치 단정 금지. 확률 단정 대신 안정/적정/도전 구간."},
+            {"구분": "Output Format", "상세 정의": "가능성 카드 + 점수 breakdown + A/B/C 차트 + 8주 로드맵 + 근거(expander) + 외부 API 인사이트 + JSON/PDF/번역 다운로드"},
         ]
     )
 
-    st.markdown("## 5. 상용화 티어(초안)")
-    st.table(
-        [
-            {"Tier": "Free", "제공": "진단 + A/B/C 요약 + 2주 미니 체크리스트"},
-            {"Tier": "Basic", "제공": "A/B/C 상세 + 8주 로드맵 + 근거 보기"},
-            {"Tier": "Pro", "제공": "전형별 심화(자소서/면접 포인트) + 리포트/PDF + 저장/버전관리(컨셉)"},
-        ]
-    )
-
-    st.markdown("## 6. KPI(예시 3개)")
+    st.markdown("## 7. KPI(예시 3개)")
     st.markdown(
         """
 - **Time-to-Plan**: 입력 시작→8주 플랜 생성까지 걸린 시간(분)  
