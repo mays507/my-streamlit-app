@@ -1,8 +1,11 @@
-# Y-Compass (와이컴퍼스) — Streamlit MVP+ (심사자 설득력 강화 버전)
-# (1) CSV 업로드 기반 데이터 커버리지 확장
-# (2) 결과 배지(데이터 기반/가이드 기반)
-# (3) A/B/C 점수화 + 기여도 breakdown(설명가능성 강화)
-# (4) 연도별 기준선 vs 내 성적 미니 차트(역축) + 점수/기여도 차트
+# Y-Compass (와이컴스) — Streamlit MVP+ (심사자 설득력 강화 통합본)
+# (1) CSV 업로드 기반 데이터 커버리지 확장 + 자동 검증 리포트
+# (2) 데이터 신뢰도 점수(0~100) + 감점 사유
+# (3) 환각 방지 정책 문장(필수) + 데이터/가이드 배지
+# (4) A/B/C 점수화 + (수시) route_detail 분리 점수(설명용)
+# (5) 가중치 테이블 공개(설명가능성) + 기여도 breakdown
+# (6) 연도별 기준선 vs 내 성적 차트 + 주석(3개)
+# (7) OpenAI(선택) JSON Object 출력(Responses API) + 룰베이스 fallback
 #
 # 실행:
 #   streamlit run app.py
@@ -135,6 +138,134 @@ def band_badge_html(band: str) -> str:
 
 
 # =========================================================
+# CSV Auto Validation Report + Data Trust Score
+# =========================================================
+def csv_validation_report(df_raw: pd.DataFrame) -> Dict[str, Any]:
+    """
+    필수 컬럼 누락 / 이상치 / 중복 / route_detail 커버리지 점검 리포트
+    (df_raw: read_csv 직후 원본)
+    """
+    rep: Dict[str, Any] = {"ok": True, "issues": [], "stats": {}}
+
+    if df_raw is None or df_raw.empty:
+        rep["ok"] = False
+        rep["issues"].append("CSV가 비어있습니다.")
+        return rep
+
+    cols = [c.strip().lower() for c in df_raw.columns]
+    rep["stats"]["n_rows_raw"] = int(len(df_raw))
+    rep["stats"]["n_cols_raw"] = int(len(cols))
+
+    missing_required = [c for c in CSV_REQUIRED_COLS if c not in cols]
+    rep["stats"]["missing_required"] = missing_required
+    if missing_required:
+        rep["ok"] = False
+        rep["issues"].append(f"필수 컬럼 누락: {missing_required}")
+
+    # 중복 체크(가능한 경우)
+    key_cols = [c for c in ["university", "major", "route", "route_detail", "year", "metric"] if c in cols]
+    if key_cols:
+        tmp = df_raw.copy()
+        tmp.columns = cols
+        dup_cnt = int(tmp.duplicated(subset=key_cols, keep=False).sum())
+        rep["stats"]["duplicates_by_key"] = dup_cnt
+        if dup_cnt > 0:
+            rep["issues"].append(f"중복 행 감지: {dup_cnt} (키={key_cols})")
+    else:
+        rep["stats"]["duplicates_by_key"] = None
+
+    # 이상치(연도/threshold)
+    tmp2 = df_raw.copy()
+    tmp2.columns = cols
+
+    if "year" in cols:
+        y = tmp2["year"].apply(safe_int)
+        bad_year = int(((y.isna()) | (y < 2000) | (y > 2100)).sum())
+        rep["stats"]["bad_year_rows"] = bad_year
+        if bad_year > 0:
+            rep["issues"].append(f"연도 이상치/결측: {bad_year}")
+
+    if "threshold" in cols:
+        th = tmp2["threshold"].apply(safe_float)
+        bad_th = int(((th.isna()) | (th <= 0) | (th >= 10)).sum())
+        rep["stats"]["bad_threshold_rows"] = bad_th
+        if bad_th > 0:
+            rep["issues"].append(f"threshold 이상치/결측: {bad_th}")
+
+    # route_detail 커버리지(수시인데 route_detail 비어있으면 경로 분리 불가)
+    if "route" in cols and "route_detail" in cols:
+        r = tmp2["route"].astype(str).str.strip()
+        rd = tmp2["route_detail"].astype(str).fillna("").str.strip()
+        susi_rows = (r == "수시").sum()
+        susi_with_detail = int(((r == "수시") & (rd != "")).sum())
+        rep["stats"]["susi_rows"] = int(susi_rows)
+        rep["stats"]["susi_route_detail_filled"] = susi_with_detail
+        rep["stats"]["route_detail_coverage_susi"] = (susi_with_detail / susi_rows) if susi_rows else None
+        if susi_rows and (susi_with_detail / susi_rows) < 0.6:
+            rep["issues"].append("수시 route_detail 커버리지가 낮음(<60%): 세부 경로 점수 분리 신뢰도↓")
+
+    rep["ok"] = rep["ok"] and (len(rep["issues"]) == 0)
+    return rep
+
+
+def data_trust_score(df_norm: pd.DataFrame, report: Dict[str, Any]) -> Tuple[int, List[str]]:
+    """
+    0~100 데이터 신뢰도 점수(설명용) + 감점 사유
+    - 데이터 볼륨/결측/중복/커버리지/연도 다양성 기반
+    """
+    score = 100
+    reasons: List[str] = []
+
+    if df_norm is None or df_norm.empty:
+        return 0, ["정규화된 데이터가 없음(가이드 기반 모드)"]
+
+    n = len(df_norm)
+    years = df_norm["year"].nunique() if "year" in df_norm.columns else 0
+
+    if n < 30:
+        score -= 18
+        reasons.append("데이터 rows < 30 (표본 적음)")
+    elif n < 100:
+        score -= 8
+        reasons.append("데이터 rows < 100 (표본 중간)")
+
+    if years < 3:
+        score -= 15
+        reasons.append("연도 다양성 < 3 (추세/기준선 안정성↓)")
+    elif years < 5:
+        score -= 6
+        reasons.append("연도 다양성 < 5")
+
+    dup = report.get("stats", {}).get("duplicates_by_key")
+    if isinstance(dup, int) and dup > 0:
+        score -= min(15, dup // 10 + 5)
+        reasons.append(f"중복 행 존재({dup})")
+
+    bad_year = report.get("stats", {}).get("bad_year_rows", 0)
+    bad_th = report.get("stats", {}).get("bad_threshold_rows", 0)
+    if isinstance(bad_year, int) and bad_year > 0:
+        score -= min(10, bad_year // 10 + 3)
+        reasons.append(f"연도 이상치/결측({bad_year})")
+    if isinstance(bad_th, int) and bad_th > 0:
+        score -= min(15, bad_th // 10 + 5)
+        reasons.append(f"threshold 이상치/결측({bad_th})")
+
+    cov = report.get("stats", {}).get("route_detail_coverage_susi")
+    if isinstance(cov, float):
+        if cov < 0.6:
+            score -= 15
+            reasons.append("수시 route_detail 커버리지 낮음(<60%)")
+        elif cov < 0.8:
+            score -= 6
+            reasons.append("수시 route_detail 커버리지 보통(<80%)")
+
+    score = int(clamp(float(score), 0.0, 100.0))
+    if score >= 90:
+        reasons = ["정합성/커버리지 양호"] + reasons[:2]
+    return score, reasons
+
+
+# =========================================================
 # Data Handling: CSV -> normalized dataframe
 # =========================================================
 def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -149,7 +280,6 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = ""
 
-    # normalize values
     df["university"] = df["university"].astype(str).str.strip()
     df["major"] = df["major"].astype(str).str.strip()
     df["route"] = df["route"].astype(str).str.strip()
@@ -165,13 +295,10 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["year", "threshold"])
     df = df[df["metric"].isin(["gpa", "mock"])]
 
-    # Clean route variants
     df["route"] = df["route"].replace({"수시 ": "수시", "정시 ": "정시"})
     df = df[df["route"].isin(["수시", "정시"])]
 
-    # Remove obvious invalid threshold
     df = df[(df["threshold"] > 0) & (df["threshold"] < 10)]
-
     return df
 
 
@@ -217,7 +344,7 @@ def match_rows(
 
 
 # =========================================================
-# Explainable Scoring: Score -> Band, and A/B/C scoring
+# Explainable Scoring
 # =========================================================
 @dataclass
 class ScoreWeights:
@@ -284,7 +411,6 @@ def academics_score(
     """
     Score 0..100. Lower grade is better.
     - If ref exists: anchor = most recent threshold (last year)
-    - Return score, message, anchor
     """
     if user_value is None:
         return 50.0, "성적 입력이 없어 학업 점수는 중립(50)으로 처리했습니다.", None
@@ -358,22 +484,13 @@ def abc_scores(
     priorities: List[str],
 ) -> Dict[str, Dict[str, Any]]:
     """
-    A/B/C 점수화(설명가능 규칙):
-    - base_score: 사용자 기본 적합도/가능성 총점
-    - A(안정): 리스크 회피(제약 많을수록 A 권장 가산), +8
-    - B(적정): 기준, +0
-    - C(도전): 상향(제약 많을수록 감산), -10
-
-    추가로 "목표 우선순위"가 '합격 안정성'이면 A 쪽 소폭 가산,
-    '적성/흥미'가 있으면 B 쪽 소폭 가산,
-    '취업/진로 연계'가 있으면 C/B 쪽 소폭 가산(도전 허용).
+    A/B/C 점수화(설명가능 규칙)
     """
     n_constraints = len(constraints)
     risk_factor = clamp(n_constraints / 4.0, 0.0, 1.0)  # 0~1
 
     p = " ".join(priorities or [])
 
-    # small priority nudges
     a_nudge = 2.0 if "합격 안정성" in p else 0.0
     b_nudge = 1.5 if "적성/흥미" in p else 0.0
     c_nudge = 1.5 if "취업/진로 연계" in p else 0.0
@@ -390,6 +507,47 @@ def abc_scores(
     for k in out:
         out[k]["band"] = score_to_band(out[k]["score"])
     return out
+
+
+def abc_scores_by_route_detail(
+    base_score: float,
+    constraints: List[str],
+    priorities: List[str],
+    route: str,
+    route_detail: str,
+) -> Dict[str, Any]:
+    """
+    수시일 때 route_detail에 따라 A/B/C를 '경로별로' 조금 다르게 점수화(설명용).
+    """
+    abc = abc_scores(base_score, constraints, priorities)
+
+    if route != "수시":
+        return {"selected_route_detail": "", "variants": {"(정시/공통)": abc}}
+
+    rd = _nonempty(route_detail)
+    variants: Dict[str, Dict[str, Any]] = {}
+
+    def adj(abc_in: Dict[str, Dict[str, Any]], a=0.0, b=0.0, c=0.0) -> Dict[str, Dict[str, Any]]:
+        out = {k: dict(v) for k, v in abc_in.items()}
+        out["A"]["score"] = clamp(out["A"]["score"] + a, 0, 100)
+        out["B"]["score"] = clamp(out["B"]["score"] + b, 0, 100)
+        out["C"]["score"] = clamp(out["C"]["score"] + c, 0, 100)
+        for kk in out:
+            out[kk]["band"] = score_to_band(out[kk]["score"])
+        return out
+
+    variants["(공통)"] = abc
+    variants["학생부종합"] = adj(abc, a=-2, b=0, c=-4)
+    variants["학생부교과"] = adj(abc, a=+3, b=+1, c=-2)
+    variants["논술"] = adj(abc, a=-2, b=0, c=+3)
+
+    picked = "(공통)"
+    for k in ["학생부종합", "학생부교과", "논술"]:
+        if k in rd:
+            picked = k
+            break
+
+    return {"selected_route_detail": picked, "variants": variants}
 
 
 # =========================================================
@@ -415,7 +573,7 @@ def openai_generate_plan(
 - 사실(전형요강/데이터)은 아래 [근거 문서]에 있는 내용만 사용하라.
 - 근거 문서에 없는 수치/사실은 단정하지 말고 "일반 가이드"로 표현하라.
 - 확률 단정 금지. 대신 안정/적정/도전 구간으로 표현하라.
-- 8주 로드맵은 사용자가 선택한 전형과 현재 시점(월/주차)을 고려해
+- 8주 로드맵은 사용자가 선택한 전형과 현재 단계(입력값)를 고려해
   "주차별 핵심 목표 1개 + 할 일 2~3개 + 산출물 1개"로 구조화하라.
 
 출력은 반드시 아래 JSON 스키마로만 작성하라(다른 문장 금지).
@@ -474,8 +632,6 @@ JSON 스키마:
                 "content": [{"type": "input_text", "text": prompt}],
             }
         ],
-        # Responses API supports JSON object response formats (structured outputs),
-        # the model must be instructed to output JSON. (See response format docs)  # cite in write-up, not in code.
         "text": {"format": {"type": "json_object"}},
     }
 
@@ -483,7 +639,6 @@ JSON 스키마:
     r.raise_for_status()
     data = r.json()
 
-    # Collect output text
     text_out = ""
     for out_item in data.get("output", []):
         for c in out_item.get("content", []):
@@ -494,7 +649,6 @@ JSON 스키마:
     if not text_out:
         raise ValueError("OpenAI 응답 텍스트가 비어있습니다.")
 
-    # Parse JSON robustly
     try:
         return json.loads(text_out)
     except json.JSONDecodeError:
@@ -584,6 +738,10 @@ if "score_breakdown" not in st.session_state:
     st.session_state.score_breakdown = None
 if "abc" not in st.session_state:
     st.session_state.abc = None
+if "csv_report" not in st.session_state:
+    st.session_state.csv_report = None
+if "data_trust" not in st.session_state:
+    st.session_state.data_trust = None
 
 
 # =========================================================
@@ -657,10 +815,25 @@ with tabs[0]:
     if uploaded is not None:
         try:
             df_raw = pd.read_csv(uploaded)
+
+            # ✅ 자동 검증 리포트(심사자용)
+            rep = csv_validation_report(df_raw)
+            st.session_state.csv_report = rep
+            with st.expander("🧪 CSV 자동 검증 리포트(필수 컬럼/이상치/중복/route_detail 커버리지)", expanded=True):
+                st.json(rep)
+
             df = normalize_df(df_raw)
             st.session_state.df_data = df
+
+            # ✅ 데이터 신뢰도 점수
+            trust, reasons = data_trust_score(df, rep)
+            st.session_state.data_trust = {"score": trust, "reasons": reasons}
+            st.metric("데이터 신뢰도 점수(0~100)", trust)
+            st.caption("감점 사유: " + " / ".join(reasons))
+
             st.success(f"업로드 성공! rows={len(df):,}")
             st.dataframe(df.head(30), use_container_width=True)
+
         except Exception as e:
             st.error("CSV 파싱/정규화 실패")
             st.caption(str(e))
@@ -746,7 +919,6 @@ with tabs[1]:
         if not uni and _nonempty(desired_text):
             uni = _nonempty(desired_text).split()[0]
         if not mj and _nonempty(desired_text):
-            # heuristic: second token as major if exists
             toks = _nonempty(desired_text).split()
             if len(toks) >= 2:
                 mj = toks[1]
@@ -767,6 +939,7 @@ with tabs[1]:
         tot, breakdown = total_score(weights, acad_s, extra_s, penalty, fit_s)
         band = score_to_band(tot)
         abc = abc_scores(tot, constraints, priorities[:2])
+        abc_detail_pack = abc_scores_by_route_detail(tot, constraints, priorities[:2], route, route_detail)
 
         payload = {
             "today": str(today),
@@ -792,6 +965,7 @@ with tabs[1]:
             "score_total": float(tot),
             "score_breakdown": breakdown,
             "abc_scores": abc,
+            "abc_scores_by_route_detail": abc_detail_pack,
             "scoring_notes": {
                 "academics": acad_msg,
                 "fit": "전형-성향 적합도는 선택 성향과 전형 특성 매칭으로 산출했습니다.",
@@ -810,10 +984,7 @@ with tabs[1]:
             tail = matched.sort_values("year").tail(12)
             for _, row in tail.iterrows():
                 title = f"{row['university']} {row['major']} | {row['route']}{(' - ' + row['route_detail']) if row['route_detail'] else ''} | {int(row['year'])}"
-                note = (
-                    f"metric={row['metric']} threshold={row['threshold']} | "
-                    f"source={row.get('source','')} | note={row.get('note','')}"
-                )
+                note = f"metric={row['metric']} threshold={row['threshold']} | source={row.get('source','')} | note={row.get('note','')}"
                 evidence_docs.append({"title": title, "note": note})
         else:
             evidence_docs.append(
@@ -825,7 +996,6 @@ with tabs[1]:
 
         st.session_state.evidence = evidence_docs
 
-        # Generate plan
         with st.spinner("A/B/C 추천 + 8주 로드맵 생성 중..."):
             try:
                 if _nonempty(openai_api_key):
@@ -856,31 +1026,15 @@ with tabs[1]:
 # =========================================================
 # Charts (Altair helpers)
 # =========================================================
-def chart_threshold_vs_user(chart_df: pd.DataFrame) -> alt.Chart:
+def chart_threshold_vs_user(chart_df: pd.DataFrame, anchor: Optional[float], is_data_based: bool) -> alt.Chart:
     """
     chart_df: columns = ['year','threshold','user_value']
     Lower is better -> reverse Y axis.
+    + Annotations(3)
     """
-    base = alt.Chart(chart_df).encode(
-        x=alt.X("year:O", title="연도"),
-        y=alt.Y("value:Q", title="등급(낮을수록 유리)", scale=alt.Scale(reverse=True)),
-        color=alt.Color("series:N", title=""),
-        tooltip=[
-            alt.Tooltip("year:O", title="연도"),
-            alt.Tooltip("series:N", title="항목"),
-            alt.Tooltip("value:Q", title="값", format=".2f"),
-        ],
-    )
-
     long_df = chart_df.melt(id_vars=["year"], value_vars=["threshold", "user_value"], var_name="series", value_name="value")
     long_df["series"] = long_df["series"].replace({"threshold": "기준선(threshold)", "user_value": "내 성적(user)"})
 
-    line = base.mark_line(point=True).transform_lookup(
-        lookup="year",
-        from_=alt.LookupData(long_df, "year", ["series", "value"]),
-    )
-
-    # transform_lookup + base encodes series/value, but lookup duplicates; simpler:
     line = alt.Chart(long_df).mark_line(point=True).encode(
         x=alt.X("year:O", title="연도"),
         y=alt.Y("value:Q", title="등급(낮을수록 유리)", scale=alt.Scale(reverse=True)),
@@ -892,7 +1046,27 @@ def chart_threshold_vs_user(chart_df: pd.DataFrame) -> alt.Chart:
         ],
     )
 
-    return line.properties(height=260)
+    y_min = float(chart_df[["threshold", "user_value"]].min().min())
+    y_max = float(chart_df[["threshold", "user_value"]].max().max())
+    x_min = str(chart_df["year"].min())
+    x_max = str(chart_df["year"].max())
+    y_anchor = float(anchor) if anchor is not None else float(chart_df["threshold"].iloc[-1])
+
+    ann_df = pd.DataFrame(
+        [
+            {"x": x_min, "y": y_min, "t": "① y축 역축: 낮을수록 유리"},
+            {"x": x_max, "y": y_anchor, "t": "② 최근 기준선(anchor)"},
+            {"x": x_min, "y": y_max, "t": f"③ 커버리지: {'데이터 기반' if is_data_based else '가이드 기반'}"},
+        ]
+    )
+
+    annotations = alt.Chart(ann_df).mark_text(align="left", dx=6, dy=-6).encode(
+        x=alt.X("x:O", title=None),
+        y=alt.Y("y:Q", scale=alt.Scale(reverse=True), title=None),
+        text="t:N",
+    )
+
+    return (line + annotations).properties(height=260)
 
 
 def chart_breakdown(breakdown: Dict[str, float]) -> alt.Chart:
@@ -937,12 +1111,42 @@ def chart_abc_scores(abc: Dict[str, Dict[str, Any]]) -> alt.Chart:
 with tabs[2]:
     st.subheader("📌 결과")
 
+    # ✅ 환각 방지 정책(필수)
+    st.warning(
+        "⚠️ 환각 방지 정책: 본 앱은 업로드된 CSV/근거(expander)에 없는 수치·요강을 '사실'로 단정하지 않습니다. "
+        "커버리지 밖에서는 '일반 가이드'로만 안내하며, 합격 확률/보장 표현을 사용하지 않습니다."
+    )
+
+    # ✅ 데이터 신뢰도 점수(있으면 표시)
+    trust_pack = st.session_state.get("data_trust") or {}
+    if isinstance(trust_pack, dict) and trust_pack.get("score") is not None:
+        st.metric("데이터 신뢰도 점수(0~100)", trust_pack.get("score"))
+        reasons = trust_pack.get("reasons") or []
+        if reasons:
+            st.caption("감점 사유: " + " / ".join(reasons))
+
     if st.session_state.result is None or st.session_state.payload is None:
         st.info("먼저 '📝 진단 입력'에서 결과를 생성해줘.")
     else:
         payload = st.session_state.payload
         plan = st.session_state.result
         meta = plan.get("_meta", {})
+
+        # ✅ 가중치 테이블(설명가능성)
+        st.markdown("### 🧾 가중치 테이블(설명가능성)")
+        wn = normalize_weights(weights)
+        w_df = pd.DataFrame(
+            [
+                {"요소": "학업(성적)", "가중치": wn.academics},
+                {"요소": "비교과", "가중치": wn.extracurricular},
+                {"요소": "제약(감점)", "가중치": wn.constraints},
+                {"요소": "적합도(성향↔전형)", "가중치": wn.preference_fit},
+            ]
+        )
+        st.dataframe(w_df.style.format({"가중치": "{:.2f}"}), use_container_width=True)
+        st.caption("총점(0~100) = (학업*가중치 + 비교과*가중치 + 적합도*가중치) - (제약*가중치)")
+
+        st.divider()
 
         # --- Section 1
         st.markdown("## 섹션 1 — 내가 원하는 전형 가능성 카드")
@@ -969,7 +1173,6 @@ with tabs[2]:
             with st.container(border=True):
                 st.markdown('<div class="card-title">왜 이 구간인가? (설명가능 점수화)</div>', unsafe_allow_html=True)
                 st.write(meta.get("academics_msg", ""))
-
                 bd = payload["score_breakdown"]
                 st.altair_chart(chart_breakdown(bd), use_container_width=True)
 
@@ -991,9 +1194,11 @@ with tabs[2]:
                 chart_df["user_value"] = float(payload["metric_value"])
 
                 st.dataframe(chart_df, use_container_width=True)
-
-                st.altair_chart(chart_threshold_vs_user(chart_df), use_container_width=True)
-                st.caption("※ 등급 기준: **낮을수록 유리**. (그래프는 참고용이며, 단정적 합격 예측이 아님)")
+                st.altair_chart(
+                    chart_threshold_vs_user(chart_df, payload.get("data_anchor_threshold"), payload["coverage_is_data"]),
+                    use_container_width=True,
+                )
+                st.caption("※ 그래프는 참고용이며, 단정적 합격 예측이 아닙니다.")
             elif matched is not None and not matched.empty:
                 st.info("매칭 데이터는 있으나, 성적 입력이 없어 비교 그래프를 만들 수 없습니다.")
             else:
@@ -1004,14 +1209,27 @@ with tabs[2]:
 
         st.divider()
 
-        # --- A/B/C Score Chart (요구사항 3)
+        # --- A/B/C Score Chart
         st.markdown("## 섹션 2 — A/B/C 추천 점수화(설명가능성 강화)")
         abc = payload.get("abc_scores") or {}
         if abc:
             st.altair_chart(chart_abc_scores(abc), use_container_width=True)
-            st.caption("A/B/C 점수는 **총점(기본 적합도)**를 기준으로, 제약/목표 우선순위를 반영해 *경로 난이도*를 조정해 산출합니다.")
+            st.caption("A/B/C 점수는 총점(기본 적합도)을 기준으로, 제약/목표 우선순위를 반영해 경로 난이도를 보정해 산출합니다.")
         else:
             st.warning("A/B/C 점수화 결과가 없습니다.")
+
+        # --- (수시) route_detail 분리 점수(설명용)
+        st.markdown("### 🧭 A/B/C 경로별 점수(수시 세부전형 분리)")
+        pack = payload.get("abc_scores_by_route_detail", {})
+        variants = pack.get("variants", {})
+        picked = pack.get("selected_route_detail", "(공통)")
+
+        if variants:
+            keys = list(variants.keys())
+            idx = keys.index(picked) if picked in keys else 0
+            opt = st.selectbox("세부전형(설명용 분리)", keys, index=idx)
+            st.altair_chart(chart_abc_scores(variants[opt]), use_container_width=True)
+            st.caption("※ 동일 총점을 기반으로, 전형 특성(변동성/정량성)에 따라 A/B/C를 미세 조정한 '설명용 분리'입니다.")
 
         st.divider()
 
@@ -1084,6 +1302,8 @@ with tabs[2]:
             "roadmap": plan.get("roadmap", []),
             "evidence": plan.get("evidence", []),
             "meta": plan.get("_meta", {}),
+            "csv_validation_report": st.session_state.get("csv_report"),
+            "data_trust": st.session_state.get("data_trust"),
         }
         st.download_button(
             "📄 결과 리포트 다운로드 (.json)",
@@ -1116,31 +1336,42 @@ with tabs[3]:
     st.markdown("## 2. 핵심 기능(3)")
     st.markdown(
         """
-1) **8문항 진학 상황 스캔(Intake & Profiling)**: 상황 요약 5줄 + 강점/제약 태그  
-2) **근거 기반 후보 3개 추천(A/B/C)**: 추천 이유/액션/리스크 + 근거(출처)  
-3) **8주 로드맵**: 전형+시점 반영, 주차별 목표1 + 할 일2~3 + 산출물1
+1) **3분 진단(Intake & Profiling)**: 상황 요약 + 강점/제약 입력  
+2) **근거 기반 후보 3개 추천(A/B/C)**: 추천 이유/액션/리스크 + 근거(출처/연도)  
+3) **8주 로드맵**: 전형+현재 단계 반영, 주차별 목표1 + 할 일2~3 + 산출물1
 """
     )
 
-    st.markdown("## 3. Technical Spec (피드백 반영)")
+    st.markdown("## 3. 신뢰성/설명가능성(심사자 포인트)")
+    st.markdown(
+        """
+- **환각 방지 정책 문구**: 근거 없는 수치/요강 단정 금지  
+- **CSV 자동 검증 리포트**: 필수 컬럼/이상치/중복/route_detail 커버리지 점검  
+- **데이터 신뢰도 점수(0~100)**: 표본/연도 다양성/결측/중복/커버리지 기반  
+- **가중치 테이블 공개 + 기여도 breakdown**: 왜 이런 점수가 나왔는지 설명 가능  
+- **(수시) 세부 전형 점수 분리(설명용)**: 학종/교과/논술별 경로 리스크 표현 강화
+"""
+    )
+
+    st.markdown("## 4. Technical Spec")
     st.table(
         [
             {
                 "구분": "Input Data",
-                "상세 정의": "사용자 희망 전형(직접 선택/입력) + 수시/정시 대분류 + 수시 세부 전형 분기 + 성적(내신/모의 구간) + (선택)대학/학과 키",
+                "상세 정의": "사용자 희망 전형(직접 선택/입력) + 수시/정시 + 수시 세부 전형 + 성적(내신/모의 구간) + (선택)대학/학과 키 + 성향/비교과/제약",
             },
             {
                 "구분": "AI Prompting",
-                "상세 정의": "전형 존중 + 가능성/리스크/대안 제시. 과거 입시 결과는 연도/범위/한계 명시, 확률 단정 금지(안정/적정/도전). 데이터 없는 경우 수치 예측 금지→전형 특성 기반 가이드.",
+                "상세 정의": "전형 존중 + 가능성/리스크/대안 제시. 근거 문서(업로드 데이터/출처) 밖 수치 단정 금지. 확률 단정 대신 안정/적정/도전 구간.",
             },
             {
                 "구분": "Output Format",
-                "상세 정의": "섹션1: 가능성 카드(커버리지 배지+점수 breakdown) / 섹션2: A/B/C 점수화 차트 / 섹션3: A/B/C 카드 / 섹션4: 8주 로드맵 + 근거(expander)",
+                "상세 정의": "가능성 카드(커버리지 배지+점수 breakdown) / A/B/C 차트 / (수시) 세부 전형 분리 / A/B/C 카드 / 8주 로드맵 / 근거(expander) / JSON 다운로드",
             },
         ]
     )
 
-    st.markdown("## 4. 상용화 티어(초안)")
+    st.markdown("## 5. 상용화 티어(초안)")
     st.table(
         [
             {"Tier": "Free", "제공": "진단 + A/B/C 요약 + 2주 미니 체크리스트"},
@@ -1149,7 +1380,7 @@ with tabs[3]:
         ]
     )
 
-    st.markdown("## 5. KPI(예시 3개)")
+    st.markdown("## 6. KPI(예시 3개)")
     st.markdown(
         """
 - **Time-to-Plan**: 입력 시작→8주 플랜 생성까지 걸린 시간(분)  
